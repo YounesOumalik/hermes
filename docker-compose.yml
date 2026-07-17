@@ -42,7 +42,7 @@ services:
     expose:
       - "8001"
     ports:
-      - "127.0.0.1:8001:8001"
+      - "8001:8001"
     environment:
       - HERMES_ENV=production
       - HERMES_PORT=8001

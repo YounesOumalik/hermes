@@ -2,7 +2,7 @@
 const nextConfig = {
   output: 'standalone',
   env: {
-    HERMES_DAEMON_URL: process.env.HERMES_DAEMON_URL || 'http://hermes-daemon:8001',
+    NEXT_PUBLIC_DAEMON_URL: process.env.NEXT_PUBLIC_DAEMON_URL || 'http://169.58.30.70:8001',
   },
 };
 
