@@ -153,13 +153,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-
-        <h2>Note de sécurité</h2>
-        <p style={{ color: 'var(--muted)' }}>
-          Les clés API doivent être stockées côté serveur (Hermes Daemon) et
-          injectées via variables d'environnement. Ne les exposez jamais côté client.
-        </p>
-      </div>
-    </div>
-  );
-}
