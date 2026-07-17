@@ -2,8 +2,11 @@ FROM node:22-slim
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --omit=dev || npm install --omit=dev
+# Install curl for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+COPY package.json ./
+RUN npm install --no-audit --no-fund
 
 COPY . .
 

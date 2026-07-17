@@ -16,8 +16,7 @@
 networks:
   orchestration-net:
     name: orchestration-net
-    driver: bridge
-    attachable: true
+    external: true
   coolify:
     name: coolify
     external: true
@@ -99,7 +98,7 @@ services:
     networks:
       - orchestration-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -142,7 +141,7 @@ services:
     networks:
       - orchestration-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5678/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -173,7 +172,6 @@ services:
       - LOG_LEVEL=info
     volumes:
       - mcp_workspace:/workspace
-      - ./mcp-server:/app
     networks:
       - orchestration-net
     healthcheck:
