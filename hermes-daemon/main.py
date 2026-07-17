@@ -100,6 +100,22 @@ class AgentConfig(BaseModel):
     tools: List[str] = Field(default_factory=list)
 
 
+class SettingsUpdate(BaseModel):
+    """Mise à jour des clés API (sécurisée côté serveur)."""
+    minimax_api_key: Optional[str] = None
+    telegram_bot_token: Optional[str] = None
+    github_token: Optional[str] = None
+
+
+class SettingsStatus(BaseModel):
+    """État des clés configurées (renvoie juste présence, jamais la valeur)."""
+    minimax_configured: bool
+    telegram_configured: bool
+    github_configured: bool
+    model: str
+    mcp_ready: bool
+
+
 # ---------------------------------------------------------------------------
 # Auth (JWT simple)
 # ---------------------------------------------------------------------------
@@ -306,3 +322,96 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=settings.hermes_port)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints Settings (clés API serveur)
+# ---------------------------------------------------------------------------
+ENV_PATH = "/data/hermes.env"  # Volume persistant du daemon
+
+
+def _read_env_file() -> Dict[str, str]:
+    """Lit le fichier .env persistant du daemon."""
+    if not os.path.exists(ENV_PATH):
+        return {}
+    env: Dict[str, str] = {}
+    with open(ENV_PATH, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    return env
+
+
+def _write_env_file(env: Dict[str, str]) -> None:
+    """Écrit le fichier .env persistant."""
+    os.makedirs(os.path.dirname(ENV_PATH), exist_ok=True)
+    with open(ENV_PATH, "w") as f:
+        for k, v in env.items():
+            f.write(f"{k}={v}\n")
+    # Permissions strictes
+    os.chmod(ENV_PATH, 0o600)
+
+
+@app.get("/api/settings/status", response_model=SettingsStatus)
+async def settings_status():
+    """Indique quelles clés sont configurées (jamais les valeurs)."""
+    # Les valeurs sont lues depuis l'env du daemon (settings.* au démarrage)
+    # + check du fichier persistant
+    persisted = _read_env_file()
+
+    return SettingsStatus(
+        minimax_configured=bool(settings.minimax_api_key or persisted.get("MINIMAX_API_KEY")),
+        telegram_configured=bool(persisted.get("TELEGRAM_BOT_TOKEN")),
+        github_configured=bool(persisted.get("GITHUB_TOKEN")),
+        model=settings.minimax_model,
+        mcp_ready=False,  # Sera mis à True si le serveur MCP répond
+    )
+
+
+@app.post("/api/settings/update")
+async def update_settings(upd: SettingsUpdate, _: bool = Depends(verify_token)):
+    """Met à jour les clés API côté serveur (fichier .env persistant)."""
+    env = _read_env_file()
+
+    if upd.minimax_api_key:
+        env["MINIMAX_API_KEY"] = upd.minimax_api_key
+    if upd.telegram_bot_token:
+        env["TELEGRAM_BOT_TOKEN"] = upd.telegram_bot_token
+    if upd.github_token:
+        env["GITHUB_TOKEN"] = upd.github_token
+
+    _write_env_file(env)
+
+    return {
+        "status": "ok",
+        "updated": [
+            k for k, v in [
+                ("minimax", bool(upd.minimax_api_key)),
+                ("telegram", bool(upd.telegram_bot_token)),
+                ("github", bool(upd.github_token)),
+            ] if v
+        ],
+        "message": "Les clés sont sauvegardées. Redémarrer hermes-daemon pour qu'elles prennent effet.",
+    }
+
+
+@app.post("/api/settings/test/minimax")
+async def test_minimax(_: bool = Depends(verify_token)):
+    """Teste la clé Minimax (appelle /models de l'API)."""
+    api_key = settings.minimax_api_key
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Clé Minimax non configurée")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            resp = await client.get(
+                f"{settings.minimax_base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            return {"status": "ok", "code": resp.status_code, "reachable": resp.status_code == 200}
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Erreur Minimax: {e}")
