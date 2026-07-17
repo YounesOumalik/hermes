@@ -69,7 +69,7 @@ for i in $(seq 1 60); do
   for svc in "${SERVICES[@]}"; do
     STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$svc" 2>/dev/null || echo 'starting')
     if [[ "$STATUS" == "healthy" ]]; then
-      ((HEALTHY_COUNT++))
+      HEALTHY_COUNT=$((HEALTHY_COUNT + 1))
     fi
   done
   echo "  [$i/60] ${HEALTHY_COUNT}/${#SERVICES[@]} services healthy"
