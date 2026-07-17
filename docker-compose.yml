@@ -1,0 +1,188 @@
+# ============================================================================
+# docker-compose.yml — Stack d'orchestration multi-agents
+# ----------------------------------------------------------------------------
+# Services :
+#   • hermes-daemon   — Backend agent IA (FastAPI, port 8001)
+#   • hermes-studio   — Interface graphique (Next.js, port 3000)
+#   • n8n             — Moteur d'automatisation (port 5678)
+#   • mcp-server      — Serveur MCP Node.js (port 3100)
+#
+# Réseau : orchestration-net (bridge interne nommé)
+# Volumes : hermes_data, n8n_data, mcp_workspace
+#
+# Déploiement : docker compose -f docker-compose.yml up -d
+# ============================================================================
+
+networks:
+  orchestration-net:
+    name: orchestration-net
+    driver: bridge
+    attachable: true
+  coolify:
+    name: coolify
+    external: true
+
+volumes:
+  hermes_data:
+    driver: local
+  n8n_data:
+    driver: local
+  mcp_workspace:
+    driver: local
+
+services:
+  # --------------------------------------------------------------------------
+  # Hermes Daemon — Backend agent IA (FastAPI)
+  # --------------------------------------------------------------------------
+  hermes-daemon:
+    build:
+      context: ./hermes-daemon
+      dockerfile: Dockerfile
+    container_name: hermes-daemon
+    restart: unless-stopped
+    expose:
+      - "8001"
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      - HERMES_ENV=production
+      - HERMES_PORT=8001
+      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY}
+      - MINIMAX_BASE_URL=https://api.minimax.chat/v1
+      - MINIMAX_MODEL=${MINIMAX_MODEL:-abab6.5s-chat}
+      - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
+      - MCP_SERVER_URL=http://mcp-server:3100
+      - POSTGRES_HOST=host.docker.internal
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-hermes}
+      - POSTGRES_USER=${POSTGRES_USER:-younes}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - hermes_data:/data
+      - ./hermes-daemon:/app
+    networks:
+      - orchestration-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # --------------------------------------------------------------------------
+  # Hermes Studio — Interface graphique (Next.js)
+  # --------------------------------------------------------------------------
+  hermes-studio:
+    build:
+      context: ./hermes-studio
+      dockerfile: Dockerfile
+    container_name: hermes-studio
+    restart: unless-stopped
+    expose:
+      - "3000"
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - NODE_ENV=production
+      - HERMES_DAEMON_URL=http://hermes-daemon:8001
+      - NEXT_PUBLIC_DAEMON_URL=http://hermes-daemon:8001
+    depends_on:
+      hermes-daemon:
+        condition: service_healthy
+    networks:
+      - orchestration-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # --------------------------------------------------------------------------
+  # n8n — Moteur d'automatisation
+  # --------------------------------------------------------------------------
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    expose:
+      - "5678"
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_HOST=0.0.0.0
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_RUNNERS_MODE=internal
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=host.docker.internal
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-hermes}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-younes}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://169.58.30.70:5678}
+      - GENERIC_TIMEZONE=Europe/Paris
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - orchestration-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # --------------------------------------------------------------------------
+  # MCP Server — Serveur Model Context Protocol (Node.js)
+  # --------------------------------------------------------------------------
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: mcp-server
+    restart: unless-stopped
+    expose:
+      - "3100"
+    ports:
+      - "127.0.0.1:3100:3100"
+    environment:
+      - MCP_PORT=3100
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - WORKSPACE_DIR=/workspace
+      - LOG_LEVEL=info
+    volumes:
+      - mcp_workspace:/workspace
+      - ./mcp-server:/app
+    networks:
+      - orchestration-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512m

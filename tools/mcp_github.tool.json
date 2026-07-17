@@ -1,0 +1,35 @@
+{
+  "name": "mcp_github",
+  "description": "Effectue des opérations sur GitHub via le serveur MCP : liste des dépôts, lecture de fichiers, création de PR, recherche de code. Nécessite GITHUB_TOKEN configuré.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["list_repos", "read_file", "create_pr", "search_code"],
+        "description": "Type d'opération GitHub"
+      },
+      "repo": {
+        "type": "string",
+        "description": "Dépôt au format 'owner/name' (requis pour read_file, create_pr)"
+      },
+      "path": {
+        "type": "string",
+        "description": "Chemin du fichier (read_file) ou terme de recherche (search_code)"
+      },
+      "branch": {
+        "type": "string",
+        "description": "Branche cible (create_pr)"
+      },
+      "title": {
+        "type": "string",
+        "description": "Titre de la PR (create_pr)"
+      },
+      "body": {
+        "type": "string",
+        "description": "Description de la PR (create_pr)"
+      }
+    },
+    "required": ["operation"]
+  }
+}

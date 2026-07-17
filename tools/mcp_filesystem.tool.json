@@ -1,0 +1,23 @@
+{
+  "name": "mcp_filesystem",
+  "description": "Lit, écrit, liste ou supprime des fichiers dans le workspace du serveur via le serveur MCP. Utilise cet outil pour accéder directement au système de fichiers du VPS.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["read", "write", "list", "delete"],
+        "description": "Type d'opération à effectuer"
+      },
+      "path": {
+        "type": "string",
+        "description": "Chemin relatif dans le workspace (ex: 'docs/rapport.md')"
+      },
+      "content": {
+        "type": "string",
+        "description": "Contenu du fichier (requis pour 'write')"
+      }
+    },
+    "required": ["operation", "path"]
+  }
+}

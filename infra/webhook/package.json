@@ -1,0 +1,10 @@
+{
+  "name": "hermes-webhook",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hermes Orchestration GitHub Webhook Receiver",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

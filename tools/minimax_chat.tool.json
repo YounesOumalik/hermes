@@ -1,0 +1,41 @@
+{
+  "name": "minimax_chat",
+  "description": "Configure et appelle le modèle Minimax (compatible OpenAI) comme cerveau central de l'agent. Utilise cet outil pour générer du texte, raisonner, ou analyser des données via l'API Minimax.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "model": {
+        "type": "string",
+        "description": "Nom du modèle Minimax (ex: 'abab6.5s-chat', 'abab6.5t-chat')",
+        "default": "abab6.5s-chat"
+      },
+      "messages": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "role": { "type": "string", "enum": ["system", "user", "assistant"] },
+            "content": { "type": "string" }
+          },
+          "required": ["role", "content"]
+        },
+        "description": "Historique de conversation au format OpenAI"
+      },
+      "temperature": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2,
+        "default": 0.7,
+        "description": "Créativité de la réponse"
+      },
+      "max_tokens": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8192,
+        "default": 2000,
+        "description": "Nombre maximum de tokens en sortie"
+      }
+    },
+    "required": ["messages"]
+  }
+}

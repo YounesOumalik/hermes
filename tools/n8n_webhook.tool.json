@@ -1,0 +1,30 @@
+{
+  "name": "n8n_webhook",
+  "description": "Délègue une tâche complexe à un workflow n8n via son webhook. Utilise cet outil quand l'agent doit déclencher une automatisation (Google Workspace, Telegram, réseaux sociaux, etc.) gérée par n8n.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "webhook_path": {
+        "type": "string",
+        "description": "Chemin du webhook n8n (ex: 'telegram-send', 'google-calendar-create')"
+      },
+      "method": {
+        "type": "string",
+        "enum": ["GET", "POST"],
+        "default": "POST",
+        "description": "Méthode HTTP à utiliser"
+      },
+      "payload": {
+        "type": "object",
+        "description": "Corps de la requête envoyé au webhook n8n",
+        "additionalProperties": true
+      },
+      "headers": {
+        "type": "object",
+        "description": "En-têtes HTTP additionnels (optionnel)",
+        "additionalProperties": { "type": "string" }
+      }
+    },
+    "required": ["webhook_path"]
+  }
+}

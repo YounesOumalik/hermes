@@ -1,0 +1,16 @@
+# Secrets et environnement
+.env
+.env.local
+*.env
+
+# Données runtime
+n8n-data/
+hermes-daemon/__pycache__/
+hermes-daemon/.pytest_cache/
+mcp-server/node_modules/
+hermes-studio/node_modules/
+hermes-studio/.next/
+infra/webhook/node_modules/
+
+# Logs
+*.log
