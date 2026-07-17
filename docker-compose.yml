@@ -91,7 +91,6 @@ services:
     environment:
       - NODE_ENV=production
       - HERMES_DAEMON_URL=http://hermes-daemon:8001
-      - NEXT_PUBLIC_DAEMON_URL=http://hermes-daemon:8001
     depends_on:
       hermes-daemon:
         condition: service_healthy
