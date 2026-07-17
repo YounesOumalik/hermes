@@ -10,6 +10,7 @@ hermes-daemon/.pytest_cache/
 mcp-server/node_modules/
 hermes-studio/node_modules/
 hermes-studio/.next/
+hermes-studio/*.tsbuildinfo
 infra/webhook/node_modules/
 
 # Logs

@@ -28,8 +28,6 @@ export DEBIAN_FRONTEND=noninteractive
 
 ORCH_DIR="/srv/apps/orchestration"
 COOLIFY_PORT=8000
-HERMES_STUDIO_PORT=3000
-N8N_PORT=5678
 
 # ---------- 1. Vérifications préalables ------------------------------------
 log "=== 1/6 — Vérifications préalables ==="
@@ -65,10 +63,8 @@ ufw allow 22/tcp    comment "SSH"
 ufw allow 80/tcp    comment "HTTP (Caddy + Traefik)"
 ufw allow 443/tcp   comment "HTTPS (Caddy + Traefik)"
 
-# Ports applicatifs (accès direct si pas de domaine)
-ufw allow "${HERMES_STUDIO_PORT}/tcp" comment "Hermes Studio"
-ufw allow "${N8N_PORT}/tcp"           comment "n8n"
-ufw allow "${COOLIFY_PORT}/tcp"       comment "Coolify UI"
+# Les services applicatifs restent liés à localhost et passent par Caddy.
+# Ne pas ouvrir leurs ports Docker directement sur Internet.
 
 # Activer UFW (attention : ne pas verrouiller le SSH)
 ufw --force enable
@@ -95,8 +91,8 @@ printf '%b PRÉPARATION TERMINÉE%b\n' "${GREEN}" "${NC}"
 printf '%b═══════════════════════════════════════════════════════%b\n' "${GREEN}" "${NC}"
 echo
 echo "Coolify UI      : http://169.58.30.70:${COOLIFY_PORT}"
-echo "Hermes Studio   : http://169.58.30.70:${HERMES_STUDIO_PORT} (après docker compose up)"
-echo "n8n             : http://169.58.30.70:${N8N_PORT} (après docker compose up)"
+echo "Hermes Studio   : via Caddy/HTTPS (port Docker localhost uniquement)"
+echo "n8n             : via Caddy/HTTPS (port Docker localhost uniquement)"
 echo
 echo "Prochaines étapes :"
 echo "  1. Génère les secrets : ./scripts/generate-secrets.sh"

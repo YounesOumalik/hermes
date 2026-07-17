@@ -10,8 +10,10 @@ Responsabilités :
 
 import os
 import json
+import secrets
 import httpx
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Header
@@ -34,6 +36,8 @@ class Settings(BaseSettings):
     minimax_model: str = "abab6.5s-chat"
     n8n_webhook_base_url: str = "http://n8n:5678/webhook"
     mcp_server_url: str = "http://mcp-server:3100"
+    mcp_auth_token: str = ""
+    hermes_allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     postgres_host: str = "host.docker.internal"
     postgres_port: int = 5432
     postgres_db: str = "hermes"
@@ -51,8 +55,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[origin.strip() for origin in settings.hermes_allowed_origins.split(",") if origin.strip()],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -120,14 +124,17 @@ class SettingsStatus(BaseModel):
 # Auth (JWT simple)
 # ---------------------------------------------------------------------------
 def verify_token(authorization: Optional[str] = Header(None)) -> bool:
-    """Vérifie le token Bearer. En dev, accepte tout si pas de secret configuré."""
+    """Vérifie le secret de service sans jamais échouer ouvertement en production."""
     if not settings.hermes_jwt_secret:
-        return True  # Mode dev
+        if settings.hermes_env.lower() in {"dev", "development", "test"}:
+            return True
+        raise HTTPException(status_code=503, detail="Authentification Hermes non configurée")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token manquant")
     token = authorization.split(" ", 1)[1]
-    # TODO: vérification JWT complète avec python-jose
-    return token == settings.hermes_jwt_secret
+    if not secrets.compare_digest(token, settings.hermes_jwt_secret):
+        raise HTTPException(status_code=403, detail="Token invalide")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +292,7 @@ async def _call_mcp(tool_name: str, args: Dict[str, Any]):
             resp = await client.post(
                 f"{settings.mcp_server_url}/tools/{tool_name}/call",
                 json={"arguments": args},
-                headers={"Authorization": f"Bearer {os.getenv('MCP_AUTH_TOKEN', '')}"},
+                headers={"Authorization": f"Bearer {settings.mcp_auth_token}"},
             )
             resp.raise_for_status()
             return resp.json()
@@ -296,7 +303,27 @@ async def _call_mcp(tool_name: str, args: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Endpoints Agents
 # ---------------------------------------------------------------------------
-AGENTS: Dict[str, AgentConfig] = {}
+AGENTS_PATH = Path("/data/agents.json")
+
+
+def _load_agents() -> Dict[str, AgentConfig]:
+    if not AGENTS_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(AGENTS_PATH.read_text())
+        return {name: AgentConfig.model_validate(agent) for name, agent in raw.items()}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_agents() -> None:
+    AGENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = AGENTS_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps({name: agent.model_dump() for name, agent in AGENTS.items()}, indent=2))
+    temporary.replace(AGENTS_PATH)
+
+
+AGENTS: Dict[str, AgentConfig] = _load_agents()
 
 
 @app.get("/api/agents")
@@ -307,6 +334,7 @@ async def list_agents(_: bool = Depends(verify_token)):
 @app.post("/api/agents", response_model=AgentConfig)
 async def create_agent(agent: AgentConfig, _: bool = Depends(verify_token)):
     AGENTS[agent.name] = agent
+    _save_agents()
     return agent
 
 
@@ -314,6 +342,7 @@ async def create_agent(agent: AgentConfig, _: bool = Depends(verify_token)):
 async def delete_agent(name: str, _: bool = Depends(verify_token)):
     if name in AGENTS:
         del AGENTS[name]
+        _save_agents()
         return {"status": "deleted", "name": name}
     raise HTTPException(status_code=404, detail="Agent introuvable")
 
@@ -357,18 +386,29 @@ def _write_env_file(env: Dict[str, str]) -> None:
 
 
 @app.get("/api/settings/status", response_model=SettingsStatus)
-async def settings_status():
+async def settings_status(_: bool = Depends(verify_token)):
     """Indique quelles clés sont configurées (jamais les valeurs)."""
     # Les valeurs sont lues depuis l'env du daemon (settings.* au démarrage)
     # + check du fichier persistant
     persisted = _read_env_file()
+
+    mcp_ready = False
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(
+                f"{settings.mcp_server_url}/health",
+                headers={"Authorization": f"Bearer {settings.mcp_auth_token}"},
+            )
+            mcp_ready = response.is_success
+    except httpx.HTTPError:
+        mcp_ready = False
 
     return SettingsStatus(
         minimax_configured=bool(settings.minimax_api_key or persisted.get("MINIMAX_API_KEY")),
         telegram_configured=bool(persisted.get("TELEGRAM_BOT_TOKEN")),
         github_configured=bool(persisted.get("GITHUB_TOKEN")),
         model=settings.minimax_model,
-        mcp_ready=False,  # Sera mis à True si le serveur MCP répond
+        mcp_ready=mcp_ready,
     )
 
 

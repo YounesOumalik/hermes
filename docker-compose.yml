@@ -42,16 +42,18 @@ services:
     expose:
       - "8001"
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
       - HERMES_ENV=production
       - HERMES_PORT=8001
       - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
+      - HERMES_ALLOWED_ORIGINS=${HERMES_ALLOWED_ORIGINS:-https://hermes.example.com}
       - MINIMAX_API_KEY=${MINIMAX_API_KEY}
       - MINIMAX_BASE_URL=https://api.minimax.chat/v1
       - MINIMAX_MODEL=${MINIMAX_MODEL:-abab6.5s-chat}
       - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
       - MCP_SERVER_URL=http://mcp-server:3100
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
       - POSTGRES_HOST=host.docker.internal
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-hermes}
@@ -87,17 +89,18 @@ services:
     expose:
       - "3000"
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       - NODE_ENV=production
       - HERMES_DAEMON_URL=http://hermes-daemon:8001
+      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
     depends_on:
       hermes-daemon:
         condition: service_healthy
     networks:
       - orchestration-net
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -21,14 +21,19 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || '/workspace';
 
 const app = express();
-app.use(cors());
+const allowedOrigins = (process.env.MCP_ALLOWED_ORIGINS || 'http://localhost:8001')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(cors({ origin: allowedOrigins, credentials: false }));
 app.use(express.json());
 
 // ---------------------------------------------------------------------------
 // Auth middleware
 // ---------------------------------------------------------------------------
 function requireAuth(req, res, next) {
-  if (!AUTH_TOKEN) return next(); // Mode dev : pas d'auth
+  if (!AUTH_TOKEN && process.env.NODE_ENV === 'development') return next();
+  if (!AUTH_TOKEN) return res.status(503).json({ error: 'MCP_AUTH_TOKEN non configuré' });
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -117,10 +122,11 @@ app.post('/tools/:name/call', requireAuth, async (req, res) => {
 // ---------------------------------------------------------------------------
 async function handleFilesystem(args) {
   const { operation, path: relPath, content } = args;
-  const fullPath = path.join(WORKSPACE_DIR, relPath);
+  const fullPath = path.resolve(WORKSPACE_DIR, relPath || '.');
+  const relativePath = path.relative(WORKSPACE_DIR, fullPath);
 
   // Sécurité : empêcher la traversée de répertoire
-  if (!fullPath.startsWith(WORKSPACE_DIR)) {
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
     throw new Error('Chemin non autorisé');
   }
 
