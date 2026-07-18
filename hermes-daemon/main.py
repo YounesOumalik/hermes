@@ -8,9 +8,13 @@ Responsabilités :
   • Coordonner les appels au serveur MCP (filesystem, GitHub)
 """
 
-import os
+import asyncio
 import json
+import logging
+import os
+import re
 import secrets
+import time
 import httpx
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +42,8 @@ class Settings(BaseSettings):
     minimax_api_key: str = ""
     minimax_base_url: str = DEFAULT_MINIMAX_BASE_URL
     minimax_model: str = DEFAULT_MINIMAX_MODEL
+    telegram_bot_token: str = ""
+    allowed_chat_id: str = ""
     n8n_webhook_base_url: str = "http://n8n:5678/webhook"
     mcp_server_url: str = "http://mcp-server:3100"
     mcp_auth_token: str = ""
@@ -141,6 +147,7 @@ class SettingsUpdate(BaseModel):
     minimax_base_url: Optional[str] = None
     minimax_model: Optional[str] = None
     telegram_bot_token: Optional[str] = None
+    allowed_chat_id: Optional[str] = None
     github_token: Optional[str] = None
 
     @field_validator("*")
@@ -151,11 +158,22 @@ class SettingsUpdate(BaseModel):
             raise ValueError("Les paramètres ne peuvent pas contenir de retour à la ligne.")
         return value
 
+    @field_validator("allowed_chat_id")
+    @classmethod
+    def validate_allowed_chat_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value.strip() and not re.fullmatch(r"-?\d{1,20}", value.strip()):
+            raise ValueError("L’identifiant de chat Telegram doit être numérique.")
+        return value.strip() if value is not None else value
+
 
 class SettingsStatus(BaseModel):
     """État des clés configurées (renvoie juste présence, jamais la valeur)."""
     minimax_configured: bool
     telegram_configured: bool
+    telegram_chat_configured: bool
+    telegram_running: bool
+    telegram_bot_username: Optional[str] = None
+    telegram_last_error: Optional[str] = None
     github_configured: bool
     model: str
     minimax_base_url: str
@@ -286,6 +304,233 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erreur Minimax: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Telegram — bridge de conversation sécurisé (long polling)
+# ---------------------------------------------------------------------------
+TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+TELEGRAM_POLL_TIMEOUT_SECONDS = 25
+TELEGRAM_REPLY_LIMIT = 4000
+TELEGRAM_HISTORY_LIMIT = 16
+LOGGER = logging.getLogger("hermes.telegram")
+
+TELEGRAM_STATE: Dict[str, Any] = {
+    "running": False,
+    "bot_username": None,
+    "last_error": None,
+}
+TELEGRAM_HISTORIES: Dict[str, List[ChatMessage]] = {}
+TELEGRAM_UNAUTHORIZED_NOTICES: Dict[str, float] = {}
+
+
+class TelegramAPIError(Exception):
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+def _get_telegram_config() -> Tuple[str, str]:
+    """Retourne le token et le chat autorisé, avec priorité aux réglages persistants."""
+    persisted = _read_env_file()
+    token = _usable_value(persisted.get("TELEGRAM_BOT_TOKEN")) or _usable_value(settings.telegram_bot_token)
+    allowed_chat_id = _usable_value(persisted.get("ALLOWED_CHAT_ID")) or _usable_value(settings.allowed_chat_id)
+    return token, allowed_chat_id
+
+
+async def _telegram_api(token: str, method: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 35.0) -> Any:
+    """Appelle Telegram sans jamais inclure le token dans les erreurs ou les logs."""
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            response = await client.post(f"{TELEGRAM_API_BASE_URL}/bot{token}/{method}", json=payload or {})
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise TelegramAPIError(response.status_code, "Telegram a renvoyé une réponse invalide.") from exc
+        except httpx.TimeoutException as exc:
+            raise TelegramAPIError(504, "Telegram ne répond pas dans le délai imparti.") from exc
+        except httpx.HTTPError as exc:
+            raise TelegramAPIError(502, "Impossible de joindre Telegram.") from exc
+
+    if not response.is_success or not data.get("ok"):
+        detail = str(data.get("description") or "Telegram a refusé la requête.")
+        raise TelegramAPIError(response.status_code, detail)
+    return data.get("result")
+
+
+def _telegram_chunks(text: str) -> List[str]:
+    """Découpe un texte pour respecter la limite de 4096 caractères de Telegram."""
+    text = text.strip()
+    if not text:
+        return ["Hermes n’a pas produit de texte exploitable."]
+    return [text[index:index + TELEGRAM_REPLY_LIMIT] for index in range(0, len(text), TELEGRAM_REPLY_LIMIT)]
+
+
+async def _send_telegram_message(token: str, chat_id: str, text: str, message_thread_id: Optional[int] = None) -> None:
+    for chunk in _telegram_chunks(text):
+        payload: Dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+        if message_thread_id is not None:
+            payload["message_thread_id"] = message_thread_id
+        await _telegram_api(token, "sendMessage", payload, timeout=15.0)
+
+
+async def _handle_telegram_message(token: str, allowed_chat_id: str, message: Dict[str, Any]) -> None:
+    telegram_chat = message.get("chat") or {}
+    chat_id = str(telegram_chat.get("id") or "")
+    text = str(message.get("text") or "").strip()
+    message_thread_id = message.get("message_thread_id")
+    if not chat_id or not text:
+        return
+
+    if not allowed_chat_id or chat_id != allowed_chat_id:
+        # Une réponse espacée permet au propriétaire de récupérer son ID sans
+        # transformer le bot public en passerelle vers MiniMax.
+        last_notice = TELEGRAM_UNAUTHORIZED_NOTICES.get(chat_id, 0)
+        if time.monotonic() - last_notice >= 60:
+            TELEGRAM_UNAUTHORIZED_NOTICES[chat_id] = time.monotonic()
+            await _send_telegram_message(
+                token,
+                chat_id,
+                "🔒 Hermes est connecté, mais ce chat n’est pas encore autorisé.\n\n"
+                f"Votre Telegram Chat ID : {chat_id}\n\n"
+                "Copiez cet ID dans Hermes Studio → Configuration → Telegram Chat ID autorisé, "
+                "puis envoyez à nouveau votre message.",
+                message_thread_id if isinstance(message_thread_id, int) else None,
+            )
+        return
+
+    if text.lower().startswith("/start"):
+        await _send_telegram_message(
+            token,
+            chat_id,
+            "✨ Hermes est prêt. Envoyez-moi une question ou utilisez /reset pour effacer le contexte de cette conversation.",
+            message_thread_id if isinstance(message_thread_id, int) else None,
+        )
+        return
+
+    if text.lower().startswith("/reset"):
+        TELEGRAM_HISTORIES.pop(chat_id, None)
+        await _send_telegram_message(
+            token,
+            chat_id,
+            "Le contexte Telegram a été effacé.",
+            message_thread_id if isinstance(message_thread_id, int) else None,
+        )
+        return
+
+    history = TELEGRAM_HISTORIES.setdefault(chat_id, [])
+    history.append(ChatMessage(role="user", content=text[:8000]))
+    try:
+        await _telegram_api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10.0)
+        response = await chat(
+            ChatRequest(messages=history, temperature=0.7, max_tokens=1200),
+            True,
+        )
+    except HTTPException as exc:
+        history.pop()
+        LOGGER.warning("Telegram: Hermes n’a pas répondu (%s)", exc.status_code)
+        if exc.status_code == 503:
+            reply = "MiniMax n’est pas encore configuré dans Hermes. Ajoutez ou testez la clé dans Studio."
+        else:
+            reply = "Hermes ne peut pas répondre pour le moment. Réessayez dans un instant."
+        await _send_telegram_message(token, chat_id, reply, message_thread_id if isinstance(message_thread_id, int) else None)
+        return
+    except Exception:
+        history.pop()
+        LOGGER.exception("Telegram: erreur de traitement du message")
+        await _send_telegram_message(
+            token,
+            chat_id,
+            "Hermes a rencontré une erreur temporaire. Réessayez dans un instant.",
+            message_thread_id if isinstance(message_thread_id, int) else None,
+        )
+        return
+
+    history.append(ChatMessage(role="assistant", content=response.content, reasoning_details=response.reasoning_details))
+    if len(history) > TELEGRAM_HISTORY_LIMIT:
+        del history[:-TELEGRAM_HISTORY_LIMIT]
+    await _send_telegram_message(token, chat_id, response.content, message_thread_id if isinstance(message_thread_id, int) else None)
+
+
+async def _telegram_polling_loop() -> None:
+    """Récupère les messages Telegram par long polling, sans webhook public supplémentaire."""
+    offset: Optional[int] = None
+    active_token = ""
+    while True:
+        token, allowed_chat_id = _get_telegram_config()
+        if not token:
+            TELEGRAM_STATE.update({"running": False, "bot_username": None, "last_error": None})
+            active_token = ""
+            offset = None
+            await asyncio.sleep(5)
+            continue
+
+        if token != active_token:
+            active_token = token
+            offset = None
+            TELEGRAM_HISTORIES.clear()
+            TELEGRAM_UNAUTHORIZED_NOTICES.clear()
+            try:
+                bot = await _telegram_api(token, "getMe", timeout=12.0)
+                TELEGRAM_STATE.update({
+                    "running": True,
+                    "bot_username": (bot or {}).get("username"),
+                    "last_error": None,
+                })
+            except TelegramAPIError as exc:
+                TELEGRAM_STATE.update({"running": False, "bot_username": None, "last_error": exc.detail})
+                LOGGER.warning("Telegram: token ou connexion invalide (%s)", exc.status_code)
+                await asyncio.sleep(15)
+                continue
+
+        payload: Dict[str, Any] = {
+            "timeout": TELEGRAM_POLL_TIMEOUT_SECONDS,
+            "allowed_updates": ["message"],
+        }
+        if offset is not None:
+            payload["offset"] = offset
+
+        try:
+            updates = await _telegram_api(token, "getUpdates", payload, timeout=TELEGRAM_POLL_TIMEOUT_SECONDS + 10)
+            TELEGRAM_STATE.update({"running": True, "last_error": None})
+            for update in updates if isinstance(updates, list) else []:
+                update_id = update.get("update_id")
+                if isinstance(update_id, int):
+                    offset = update_id + 1
+                message = update.get("message")
+                if isinstance(message, dict):
+                    await _handle_telegram_message(token, allowed_chat_id, message)
+        except asyncio.CancelledError:
+            raise
+        except TelegramAPIError as exc:
+            if exc.status_code == 409:
+                detail = "Un webhook Telegram est configuré. Supprimez-le avant d’utiliser le polling Hermes."
+            else:
+                detail = exc.detail
+            TELEGRAM_STATE.update({"running": False, "last_error": detail})
+            LOGGER.warning("Telegram polling interrompu (%s)", exc.status_code)
+            await asyncio.sleep(10)
+        except Exception:
+            TELEGRAM_STATE.update({"running": False, "last_error": "Erreur interne du bridge Telegram."})
+            LOGGER.exception("Telegram polling: erreur inattendue")
+            await asyncio.sleep(10)
+
+
+@app.on_event("startup")
+async def start_telegram_bridge() -> None:
+    app.state.telegram_task = asyncio.create_task(_telegram_polling_loop(), name="hermes-telegram-polling")
+
+
+@app.on_event("shutdown")
+async def stop_telegram_bridge() -> None:
+    task = getattr(app.state, "telegram_task", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +739,7 @@ async def settings_status(_: bool = Depends(verify_token)):
     """Indique quelles clés sont configurées (jamais les valeurs)."""
     persisted = _read_env_file()
     api_key, base_url, model = _get_minimax_config()
+    telegram_token, allowed_chat_id = _get_telegram_config()
 
     mcp_ready = False
     try:
@@ -508,7 +754,11 @@ async def settings_status(_: bool = Depends(verify_token)):
 
     return SettingsStatus(
         minimax_configured=bool(api_key),
-        telegram_configured=bool(persisted.get("TELEGRAM_BOT_TOKEN")),
+        telegram_configured=bool(telegram_token),
+        telegram_chat_configured=bool(allowed_chat_id),
+        telegram_running=bool(TELEGRAM_STATE["running"]),
+        telegram_bot_username=TELEGRAM_STATE["bot_username"],
+        telegram_last_error=TELEGRAM_STATE["last_error"],
         github_configured=bool(persisted.get("GITHUB_TOKEN")),
         model=model,
         minimax_base_url=base_url,
@@ -529,6 +779,8 @@ async def update_settings(upd: SettingsUpdate, _: bool = Depends(verify_token)):
         env["MINIMAX_MODEL"] = upd.minimax_model.strip()
     if upd.telegram_bot_token:
         env["TELEGRAM_BOT_TOKEN"] = upd.telegram_bot_token
+    if upd.allowed_chat_id:
+        env["ALLOWED_CHAT_ID"] = upd.allowed_chat_id
     if upd.github_token:
         env["GITHUB_TOKEN"] = upd.github_token
 
@@ -542,6 +794,7 @@ async def update_settings(upd: SettingsUpdate, _: bool = Depends(verify_token)):
                 ("minimax base URL", bool(upd.minimax_base_url)),
                 ("minimax model", bool(upd.minimax_model)),
                 ("telegram", bool(upd.telegram_bot_token)),
+                ("chat Telegram autorisé", bool(upd.allowed_chat_id)),
                 ("github", bool(upd.github_token)),
             ] if v
         ],
@@ -579,6 +832,30 @@ async def test_minimax(_: bool = Depends(verify_token)):
             raise HTTPException(status_code=504, detail="MiniMax ne répond pas au test dans le délai imparti.") from e
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Erreur Minimax: {e}")
+
+
+@app.post("/api/settings/test/telegram")
+async def test_telegram(_: bool = Depends(verify_token)):
+    """Teste le token Telegram et signale si un webhook empêcherait le polling."""
+    token, allowed_chat_id = _get_telegram_config()
+    if not token:
+        raise HTTPException(status_code=400, detail="Token Telegram non configuré")
+
+    try:
+        bot = await _telegram_api(token, "getMe", timeout=12.0)
+        webhook = await _telegram_api(token, "getWebhookInfo", timeout=12.0)
+    except TelegramAPIError as exc:
+        status_code = 422 if exc.status_code in {401, 404} else 502
+        raise HTTPException(status_code=status_code, detail=f"Telegram: {exc.detail}") from exc
+
+    webhook_url = str((webhook or {}).get("url") or "")
+    return {
+        "status": "warning" if webhook_url else "ok",
+        "bot_username": (bot or {}).get("username"),
+        "webhook_configured": bool(webhook_url),
+        "pending_updates": int((webhook or {}).get("pending_update_count") or 0),
+        "allowed_chat_configured": bool(allowed_chat_id),
+    }
 
 
 if __name__ == "__main__":

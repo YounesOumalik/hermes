@@ -51,6 +51,8 @@ services:
       - MINIMAX_API_KEY=${MINIMAX_API_KEY}
       - MINIMAX_BASE_URL=${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
       - MINIMAX_MODEL=${MINIMAX_MODEL:-MiniMax-M2.7}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - ALLOWED_CHAT_ID=${ALLOWED_CHAT_ID:-}
       - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
       - MCP_SERVER_URL=http://mcp-server:3100
       - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
