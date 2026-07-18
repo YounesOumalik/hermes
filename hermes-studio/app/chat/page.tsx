@@ -3,7 +3,7 @@
 import { ArrowUp, Bot, Check, ChevronDown, Copy, Paperclip, Plus, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Square, Terminal, UserRound, WandSparkles, X } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { Agent, Conversation, ConversationMessage, Tool, api } from '../lib/api';
+import { Agent, Attachment, Conversation, ConversationMessage, Tool, api } from '../lib/api';
 
 type ReasoningDetail = Record<string, unknown>;
 type ChatMessage = ConversationMessage;
@@ -12,7 +12,7 @@ type ChatResult = { content: string; model: string; agent_name?: string | null; 
 type ConversationSettingsSnapshot = { model: string; tools: string[]; contextTokens: number };
 
 const corePrompt = 'Tu es un orchestrateur précis. Décompose les demandes complexes et utilise les outils uniquement lorsque cela apporte une valeur claire.';
-const coreTools = ['mcp_filesystem', 'mcp_github', 'n8n_webhook'];
+const coreTools = ['mcp_filesystem', 'mcp_github', 'n8n_webhook', 'server_diagnostics'];
 const modelOptions = ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.1', 'MiniMax-M2'];
 const contextOptions = [
   { value: 128_000, label: '128K' },
@@ -56,14 +56,18 @@ export default function ChatPage() {
   const [selectedAgentName, setSelectedAgentName] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedTools, setSelectedTools] = useState<string[]>(coreTools);
+  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const [contextTokens, setContextTokens] = useState(200_000);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSnapshot, setSettingsSnapshot] = useState<ConversationSettingsSnapshot | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const canSend = input.trim().length > 0 && !loading && !initialising;
+  const canSend = (input.trim().length > 0 || pendingAttachments.length > 0) && !loading && !initialising;
   const activeAgent = agents.find((agent) => agent.name === selectedAgentName);
   const activeName = activeAgent?.name || 'Hermes Core';
   const activePrompt = activeAgent?.system_prompt || corePrompt;
@@ -125,6 +129,7 @@ export default function ChatPage() {
     setSelectedModel(conversation.model || '');
     setSelectedTools(conversation.tool_names || coreTools);
     setContextTokens(conversation.context_tokens || defaultContext(conversation.model));
+    setPendingAttachments([]);
     setMessages(conversation.messages?.length ? conversation.messages : [greeting(conversation.agent_name || fallbackAgent || undefined)]);
   }
 
@@ -151,7 +156,7 @@ export default function ChatPage() {
     setLoading(true);
     try {
       const response = await api.post<ChatResult>('api/chat', {
-        messages: nextMessages.map(({ role, content, reasoning_details }) => ({ role, content, ...(reasoning_details?.length ? { reasoning_details } : {}) })),
+        messages: nextMessages.map(({ role, content, reasoning_details, attachments }) => ({ role, content, ...(reasoning_details?.length ? { reasoning_details } : {}), ...(attachments?.length ? { attachments } : {}) })),
         agent_name: selectedAgentName || undefined,
         model: selectedModel || undefined,
         tool_names: selectedTools,
@@ -182,7 +187,34 @@ export default function ChatPage() {
     if (!canSend) return;
     const content = input.trim();
     setInput('');
-    await requestCompletion([...messages, { role: 'user', content, time: 'maintenant' }]);
+    const attachments = pendingAttachments.length ? pendingAttachments : undefined;
+    setPendingAttachments([]);
+    await requestCompletion([...messages, { role: 'user', content, time: 'maintenant', ...(attachments ? { attachments } : {}) }]);
+  }
+
+  async function uploadFiles(fileList: FileList | File[]) {
+    if (!conversationId || initialising) return;
+    const files = Array.from(fileList);
+    if (!files.length) return;
+    setUploading(true);
+    setUploadError('');
+    try {
+      const uploaded: Attachment[] = [];
+      for (const file of files) {
+        uploaded.push(await api.upload<Attachment>(`api/conversations/${encodeURIComponent(conversationId)}/attachments`, file));
+      }
+      setPendingAttachments((current) => [...current, ...uploaded]);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : 'Upload impossible.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  function removePendingAttachment(id: string) {
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
+    void api.delete(`api/conversations/${encodeURIComponent(conversationId)}/attachments/${id}`).catch(() => undefined);
   }
 
   function stopGeneration() {
@@ -274,7 +306,7 @@ export default function ChatPage() {
       <section className="messages-column">
         <div className="context-strip"><span><span className={`status-dot ${providerStatus?.minimax_configured ? 'online' : ''}`} /> {providerLabel}</span><span>{activeModel}</span><span>{contextLabel(contextTokens)} contexte</span></div>
         <div className="message-list">{initialising && <div className="loading-state">Chargement de la conversation…</div>}{messages.map((message, index) => <Message key={`${message.time}-${index}`} message={message} index={index} onCopy={copyMessage} onRegenerate={regenerate} copied={copied === index} />)}{loading && <div className="message assistant-message"><span className="message-avatar hermes-avatar"><Sparkles size={15} /></span><div className="message-content"><div className="message-meta"><strong>{activeName}</strong><span>réfléchit</span></div><div className="thinking"><span /><span /><span /></div></div></div>}</div>
-        <div className="composer-wrap"><div className="suggestion-row"><button onClick={() => setInput('Analyse l’état de mon installation Hermes')}><WandSparkles size={14} /> Analyser mon installation</button><button onClick={() => setInput('Crée un agent spécialisé pour mon projet')}><Bot size={14} /> Créer un agent</button></div><form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={`Écrivez une instruction à ${activeName}…`} rows={2} aria-label="Message à Hermes" /><div className="composer-toolbar"><button className="icon-button" aria-label="Ajouter un fichier (bientôt disponible)" title="Pièces jointes bientôt disponibles" disabled><Paperclip size={17} /></button><span className="composer-hint">Entrée pour envoyer · ⇧ Entrée pour une nouvelle ligne</span><button className={`send-button ${canSend ? 'ready' : ''}`} type={loading ? 'button' : 'submit'} onClick={loading ? stopGeneration : undefined} disabled={!canSend && !loading} aria-label={loading ? 'Arrêter' : 'Envoyer'}>{loading ? <Square size={15} fill="currentColor" /> : <ArrowUp size={17} />}</button></div></form><p className="composer-disclaimer">Hermes peut faire des erreurs. Vérifiez les actions importantes.</p></div>
+        <div className="composer-wrap"><div className="suggestion-row"><button onClick={() => setInput('Analyse l’état de mon installation Hermes')}><WandSparkles size={14} /> Analyser mon installation</button><button onClick={() => setInput('Crée un agent spécialisé pour mon projet')}><Bot size={14} /> Créer un agent</button></div><form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input ref={fileInputRef} className="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,.xml,.html,.css,.js,.ts,.py,.sql,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); }} /><div className="attachment-strip">{pendingAttachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /><span>{attachment.name}</span><button type="button" onClick={() => removePendingAttachment(attachment.id)} aria-label={`Supprimer ${attachment.name}`}><X size={13} /></button></span>)}{uploading && <span className="attachment-uploading">Téléversement…</span>}{uploadError && <span className="attachment-error">{uploadError}</span>}</div><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={`Écrivez une instruction à ${activeName}…`} rows={2} aria-label="Message à Hermes" /><div className="composer-toolbar"><button type="button" className="icon-button" aria-label="Joindre un fichier" title="Joindre un fichier ou déposer ici" onClick={() => fileInputRef.current?.click()} disabled={uploading}><Paperclip size={17} /></button><span className="composer-hint">Déposez un fichier ici · Entrée pour envoyer · ⇧ Entrée pour une nouvelle ligne</span><button className={`send-button ${canSend ? 'ready' : ''}`} type={loading ? 'button' : 'submit'} onClick={loading ? stopGeneration : undefined} disabled={!canSend && !loading} aria-label={loading ? 'Arrêter' : 'Envoyer'}>{loading ? <Square size={15} fill="currentColor" /> : <ArrowUp size={17} />}</button></div></form><p className="composer-disclaimer">Hermes peut faire des erreurs. Vérifiez les actions importantes.</p></div>
       </section>
       <aside className="context-panel"><div className="context-heading"><div><div className="eyebrow">CONTEXTE</div><h3>{conversationTitle}</h3></div><button className="icon-button" onClick={openConversationSettings} aria-label="Paramètres de la conversation"><SlidersHorizontal size={16} /></button></div><div className="context-agent"><span className="large-agent-avatar"><Sparkles size={20} /></span><div><strong>{activeName}</strong><small>{activeModel} · {contextLabel(contextTokens)}</small></div><Check size={16} className="text-success" /></div><div className="context-section"><div className="context-section-title"><span>Outils actifs</span><span className="count-badge">{selectedTools.length}</span></div>{selectedTools.map((tool, index) => <ContextTool icon={[Terminal, GitHubMark, WandSparkles][index % 3]} name={tool} status="Prêt" key={tool} />)}</div><div className="context-section"><div className="context-section-title"><span>Instructions</span><a className="text-link" href="/agents">Modifier</a></div><p className="context-note">{activePrompt}</p></div><div className="context-footer"><span className="status-dot online" /> Conversation synchronisée</div></aside>
     </div>
@@ -284,7 +316,7 @@ export default function ChatPage() {
 
 function Message({ message, index, onCopy, onRegenerate, copied }: { message: ChatMessage; index: number; onCopy: (index: number, content: string) => void; onRegenerate: () => void; copied: boolean }) {
   const user = message.role === 'user';
-  return <div className={`message ${user ? 'user-message' : 'assistant-message'}`}><span className={`message-avatar ${user ? 'user-avatar' : 'hermes-avatar'}`}>{user ? <UserRound size={15} /> : <Sparkles size={15} />}</span><div className="message-content"><div className="message-meta"><strong>{user ? 'Vous' : 'Hermes'}</strong><span>{message.time}</span></div><div className="message-text">{message.content}</div>{!user && <div className="message-actions"><button onClick={() => onCopy(index, message.content)}><Copy size={13} /> {copied ? 'Copié' : 'Copier'}</button><button onClick={onRegenerate}><RotateCcw size={13} /> Régénérer</button></div>}</div></div>;
+  return <div className={`message ${user ? 'user-message' : 'assistant-message'}`}><span className={`message-avatar ${user ? 'user-avatar' : 'hermes-avatar'}`}>{user ? <UserRound size={15} /> : <Sparkles size={15} />}</span><div className="message-content"><div className="message-meta"><strong>{user ? 'Vous' : 'Hermes'}</strong><span>{message.time}</span></div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /> {attachment.name}</span>)}</div> : null}<div className="message-text">{message.content}</div>{!user && <div className="message-actions"><button onClick={() => onCopy(index, message.content)}><Copy size={13} /> {copied ? 'Copié' : 'Copier'}</button><button onClick={onRegenerate}><RotateCcw size={13} /> Régénérer</button></div>}</div></div>;
 }
 
 function ContextTool({ icon: Icon, name, status }: { icon: ComponentType<{ size?: string | number }>; name: string; status: string }) {

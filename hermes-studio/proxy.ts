@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SESSION_COOKIE, verifySession } from './lib/auth';
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const session = request.cookies.get(SESSION_COOKIE)?.value;
   if (await verifySession(session)) return NextResponse.next();
   if (request.nextUrl.pathname.startsWith('/api/')) return NextResponse.json({ detail: 'Authentification requise' }, { status: 401 });

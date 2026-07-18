@@ -108,7 +108,7 @@ app.post('/tools/:name/call', requireAuth, async (req, res) => {
       return res.json({ content: [{ type: 'text', text: JSON.stringify(result) }] });
     }
     if (name === 'mcp_github') {
-      const result = await handleGithub(args);
+      const result = await handleGithub(args, req.headers['x-mcp-github-token'] || '');
       return res.json({ content: [{ type: 'text', text: JSON.stringify(result) }] });
     }
     return res.status(400).json({ error: 'Tool non supporté' });
@@ -150,14 +150,15 @@ async function handleFilesystem(args) {
   }
 }
 
-async function handleGithub(args) {
+async function handleGithub(args, requestToken = '') {
   const { operation, repo, path: filePath, branch, title, body } = args;
 
-  if (!GITHUB_TOKEN) {
+  const githubToken = requestToken || GITHUB_TOKEN;
+  if (!githubToken) {
     throw new Error('GITHUB_TOKEN non configuré');
   }
 
-  const octokit = new Octokit({ auth: GITHUB_TOKEN });
+  const octokit = new Octokit({ auth: githubToken });
 
   switch (operation) {
     case 'list_repos':

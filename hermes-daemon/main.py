@@ -9,11 +9,15 @@ Responsabilités :
 """
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
+import shutil
 import time
 import httpx
 from datetime import datetime
@@ -21,10 +25,14 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from cryptography.fernet import Fernet, InvalidToken
+from docx import Document
+from fastapi import FastAPI, HTTPException, Depends, Header, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pypdf import PdfReader
 
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1"
 DEFAULT_MINIMAX_MODEL = "MiniMax-M2.7"
@@ -55,6 +63,11 @@ class Settings(BaseSettings):
     postgres_db: str = "hermes"
     postgres_user: str = "younes"
     postgres_password: str = ""
+    upload_dir: str = "/data/uploads"
+    max_upload_bytes: int = 20 * 1024 * 1024
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
 
 
 settings = Settings()
@@ -84,6 +97,21 @@ class ChatMessage(BaseModel):
         default=None,
         description="Raisonnement MiniMax conservé pour la continuité des échanges",
     )
+    attachments: Optional[List["Attachment"]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
+
+
+class Attachment(BaseModel):
+    id: str = Field(..., pattern=r"^[a-f0-9]{32}$")
+    name: str = Field(..., min_length=1, max_length=180)
+    mime_type: str = "application/octet-stream"
+    size: int = Field(default=0, ge=0)
+    extracted: bool = False
+
+
+ChatMessage.model_rebuild()
 
 
 class ConversationMessage(ChatMessage):
@@ -108,6 +136,7 @@ class ChatResponse(BaseModel):
     finish_reason: str
     agent_name: Optional[str] = None
     reasoning_details: Optional[List[Dict[str, Any]]] = None
+    tool_events: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 def _normalise_usage(raw_usage: Any) -> Dict[str, int]:
@@ -147,6 +176,52 @@ def _trim_messages(messages: List[ChatMessage], context_tokens: int) -> List[Cha
         kept.append(message)
         total_chars += message_chars
     return list(reversed(kept))
+
+
+TEXT_ATTACHMENT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".log", ".yaml", ".yml", ".xml", ".html", ".css", ".js", ".ts", ".py", ".sql"}
+ALLOWED_ATTACHMENT_EXTENSIONS = TEXT_ATTACHMENT_EXTENSIONS | {".pdf", ".docx", ".png", ".jpg", ".jpeg", ".webp"}
+MAX_ATTACHMENT_CONTEXT_CHARS = 120_000
+
+
+def _attachment_path(attachment_id: str) -> Optional[Path]:
+    if not re.fullmatch(r"[a-f0-9]{32}", attachment_id):
+        return None
+    root = Path(settings.upload_dir)
+    matches = list(root.glob(f"*/{attachment_id}.*"))
+    return matches[0] if matches else None
+
+
+def _extract_attachment_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    try:
+        if suffix in TEXT_ATTACHMENT_EXTENSIONS:
+            return path.read_text(encoding="utf-8", errors="replace")[:MAX_ATTACHMENT_CONTEXT_CHARS]
+        if suffix == ".pdf":
+            reader = PdfReader(str(path))
+            return "\n\n".join(page.extract_text() or "" for page in reader.pages)[:MAX_ATTACHMENT_CONTEXT_CHARS]
+        if suffix == ".docx":
+            document = Document(str(path))
+            return "\n".join(paragraph.text for paragraph in document.paragraphs)[:MAX_ATTACHMENT_CONTEXT_CHARS]
+    except Exception:
+        LOGGER.exception("Impossible d’extraire le contenu de la pièce jointe %s", path.name)
+    return ""
+
+
+def _attachment_context(attachments: Optional[List[Attachment]]) -> str:
+    if not attachments:
+        return ""
+    sections: List[str] = []
+    for attachment in attachments:
+        path = _attachment_path(attachment.id)
+        if not path:
+            sections.append(f"[Pièce jointe indisponible : {attachment.name}]")
+            continue
+        text = _extract_attachment_text(path)
+        if text.strip():
+            sections.append(f"[Contenu de la pièce jointe {attachment.name}]\n{text}")
+        else:
+            sections.append(f"[Pièce jointe {attachment.name} reçue, mais son contenu binaire n’est pas extrait automatiquement]")
+    return "\n\n".join(sections)
 
 
 class ToolCallRequest(BaseModel):
@@ -281,7 +356,7 @@ async def root():
 # ---------------------------------------------------------------------------
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
-    """Envoie une conversation à Minimax et retourne la réponse."""
+    """Envoie une conversation à MiniMax avec exécution réelle des outils autorisés."""
     api_key, base_url, configured_model = _get_minimax_config()
     if not api_key:
         raise HTTPException(
@@ -289,13 +364,24 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
             detail="MiniMax n’est pas configuré. Ajoutez une clé API valide dans Configuration.",
         )
 
-    messages = []
+    messages: List[Dict[str, Any]] = []
     for message in _trim_messages(req.messages, req.context_tokens):
-        provider_message: Dict[str, Any] = {"role": message.role, "content": message.content}
+        content = message.content
+        attachment_context = _attachment_context(message.attachments)
+        if attachment_context:
+            content = f"{content}\n\n{attachment_context}".strip()
+        provider_message: Dict[str, Any] = {"role": message.role, "content": content}
         if message.role == "assistant" and message.reasoning_details:
             provider_message["reasoning_details"] = message.reasoning_details
+        if message.tool_calls:
+            provider_message["tool_calls"] = message.tool_calls
+        if message.tool_call_id:
+            provider_message["tool_call_id"] = message.tool_call_id
+        if message.name:
+            provider_message["name"] = message.name
         messages.append(provider_message)
     selected_agent: Optional[AgentConfig] = None
+    effective_tool_names: List[str] = []
     if req.agent_name:
         selected_agent = AGENTS.get(req.agent_name)
         if not selected_agent:
@@ -310,50 +396,88 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
     elif req.tool_names:
+        effective_tool_names = req.tool_names
         unknown_tools = sorted(set(req.tool_names) - set(TOOL_REGISTRY))
         if unknown_tools:
             raise HTTPException(status_code=400, detail=f"Outils inconnus: {', '.join(unknown_tools)}")
         messages.insert(0, {"role": "system", "content": f"Outils autorisés pour cette conversation : {', '.join(req.tool_names)}."})
 
     model = req.model or (selected_agent.model if selected_agent and selected_agent.model else None) or configured_model
-    payload: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": selected_agent.temperature if selected_agent else req.temperature,
-        "max_completion_tokens": selected_agent.max_tokens if selected_agent else req.max_tokens,
-        # MiniMax renvoie alors la réponse finale dans content et le raisonnement
-        # séparément. Celui-ci est conservé, mais jamais affiché dans le chat.
-        "reasoning_split": True,
-    }
-    if req.tools:
-        payload["tools"] = req.tools
+    provider_tools = [
+        {"type": "function", "function": {"name": name, "description": TOOL_REGISTRY[name]["description"], "parameters": TOOL_REGISTRY[name]["parameters"]}}
+        for name in effective_tool_names
+    ]
+    tool_events: List[Dict[str, Any]] = []
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=90.0) as client:
         try:
-            resp = await client.post(
-                f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            choice = data["choices"][0]
-            response_message = choice.get("message", {})
-            content = response_message.get("content")
-            if not content:
-                raise HTTPException(status_code=502, detail="MiniMax a renvoyé une réponse vide.")
-            reasoning_details = response_message.get("reasoning_details")
-            return ChatResponse(
-                content=content,
-                model=data.get("model", model),
-                usage=_normalise_usage(data.get("usage")),
-                finish_reason=choice.get("finish_reason", "stop"),
-                agent_name=selected_agent.name if selected_agent else None,
-                reasoning_details=reasoning_details if isinstance(reasoning_details, list) else None,
-            )
+            for _ in range(5):
+                payload: Dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": selected_agent.temperature if selected_agent else req.temperature,
+                    "max_completion_tokens": selected_agent.max_tokens if selected_agent else req.max_tokens,
+                    "reasoning_split": True,
+                }
+                if provider_tools:
+                    payload["tools"] = provider_tools
+                    payload["tool_choice"] = "auto"
+                resp = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                choice = data["choices"][0]
+                response_message = choice.get("message", {})
+                tool_calls = response_message.get("tool_calls") or []
+                if tool_calls:
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": response_message.get("content") or "",
+                        "tool_calls": tool_calls,
+                    }
+                    if response_message.get("reasoning_details"):
+                        assistant_message["reasoning_details"] = response_message["reasoning_details"]
+                    messages.append(assistant_message)
+                    for call in tool_calls:
+                        function = call.get("function") or {}
+                        tool_name = str(function.get("name") or "")
+                        raw_arguments = function.get("arguments") or {}
+                        try:
+                            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+                        except json.JSONDecodeError:
+                            arguments = {}
+                        if tool_name not in effective_tool_names:
+                            result: Dict[str, Any] = {"error": "Cet outil n’est pas autorisé pour cette conversation."}
+                        else:
+                            result = await _execute_tool(tool_name, arguments if isinstance(arguments, dict) else {})
+                        tool_events.append({"tool": tool_name, "status": "error" if "error" in result else "success"})
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call.get("id") or uuid4().hex,
+                            "name": tool_name,
+                            "content": json.dumps(result, ensure_ascii=False, default=str)[:120_000],
+                        })
+                    continue
+                content = response_message.get("content")
+                if not content:
+                    raise HTTPException(status_code=502, detail="MiniMax a renvoyé une réponse vide.")
+                reasoning_details = response_message.get("reasoning_details")
+                return ChatResponse(
+                    content=content,
+                    model=data.get("model", model),
+                    usage=_normalise_usage(data.get("usage")),
+                    finish_reason=choice.get("finish_reason", "stop"),
+                    agent_name=selected_agent.name if selected_agent else None,
+                    reasoning_details=reasoning_details if isinstance(reasoning_details, list) else None,
+                    tool_events=tool_events,
+                )
+            raise HTTPException(status_code=502, detail="MiniMax n’a pas produit de réponse finale après les appels d’outils.")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise HTTPException(
@@ -631,6 +755,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "webhook_path": {"type": "string", "description": "Chemin du webhook n8n"},
                 "method": {"type": "string", "enum": ["GET", "POST"], "default": "POST"},
                 "payload": {"type": "object", "description": "Corps de la requête"},
+                "confirmed": {"type": "boolean", "description": "Doit être true après confirmation explicite de l’utilisateur"},
             },
             "required": ["webhook_path"],
         },
@@ -644,6 +769,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "operation": {"type": "string", "enum": ["read", "write", "list", "delete"]},
                 "path": {"type": "string"},
                 "content": {"type": "string", "description": "Requis pour write"},
+                "confirmed": {"type": "boolean", "description": "Doit être true après confirmation explicite pour write/delete"},
             },
             "required": ["operation", "path"],
         },
@@ -658,6 +784,62 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "repo": {"type": "string"},
                 "path": {"type": "string"},
                 "branch": {"type": "string"},
+                "confirmed": {"type": "boolean", "description": "Doit être true après confirmation explicite pour create_pr"},
+            },
+            "required": ["operation"],
+        },
+    },
+    "server_diagnostics": {
+        "name": "server_diagnostics",
+        "description": "Analyse en lecture seule de l’état du daemon Hermes et de ses services autorisés",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["health", "system", "disk", "services"]},
+            },
+            "required": ["operation"],
+        },
+    },
+    "google_gmail": {
+        "name": "google_gmail",
+        "description": "Recherche et lecture d’emails Gmail avec le compte Google connecté",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["search", "read"]},
+                "query": {"type": "string"},
+                "message_id": {"type": "string"},
+            },
+            "required": ["operation"],
+        },
+    },
+    "google_calendar": {
+        "name": "google_calendar",
+        "description": "Consulte l’agenda Google et prépare des événements",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["list", "create"]},
+                "calendar_id": {"type": "string", "default": "primary"},
+                "time_min": {"type": "string"},
+                "time_max": {"type": "string"},
+                "summary": {"type": "string"},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+                "confirmed": {"type": "boolean", "description": "Doit être true après confirmation explicite pour créer un événement"},
+            },
+            "required": ["operation"],
+        },
+    },
+    "google_drive": {
+        "name": "google_drive",
+        "description": "Recherche et lecture de fichiers Google Drive accessibles au compte connecté",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["search", "read"]},
+                "query": {"type": "string"},
+                "file_id": {"type": "string"},
             },
             "required": ["operation"],
         },
@@ -710,15 +892,85 @@ async def _call_mcp(tool_name: str, args: Dict[str, Any]):
     """Appelle le serveur MCP via son API HTTP."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
+            headers = {"Authorization": f"Bearer {settings.mcp_auth_token}"}
+            if tool_name == "mcp_github":
+                github_token = _usable_value(_read_env_file().get("GITHUB_TOKEN"))
+                if github_token:
+                    headers["X-MCP-GitHub-Token"] = github_token
             resp = await client.post(
                 f"{settings.mcp_server_url}/tools/{tool_name}/call",
                 json={"arguments": args},
-                headers={"Authorization": f"Bearer {settings.mcp_auth_token}"},
+                headers=headers,
             )
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Erreur MCP: {e}")
+
+
+async def _call_server_diagnostics(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Diagnostics sans shell ni accès arbitraire au VPS hôte."""
+    operation = str(args.get("operation") or "health")
+    if operation == "system":
+        load = Path("/proc/loadavg").read_text().split()[:3] if Path("/proc/loadavg").exists() else []
+        memory: Dict[str, str] = {}
+        if Path("/proc/meminfo").exists():
+            for line in Path("/proc/meminfo").read_text().splitlines()[:20]:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    memory[key] = value.strip()
+        return {"scope": "conteneur Hermes", "load_average": load, "memory": memory}
+    if operation == "disk":
+        usage = shutil.disk_usage("/")
+        return {"scope": "conteneur Hermes", "total_bytes": usage.total, "used_bytes": usage.used, "free_bytes": usage.free}
+
+    service_urls = {
+        "hermes_daemon": "http://127.0.0.1:8001/health",
+        "mcp_server": f"{settings.mcp_server_url.rstrip('/')}/health",
+        "n8n": f"{settings.n8n_webhook_base_url.rstrip('/').removesuffix('/webhook')}/healthz",
+    }
+    results: Dict[str, Any] = {"scope": "services Hermes accessibles", "services": {}}
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for service, url in service_urls.items():
+            try:
+                response = await client.get(url, headers={"Authorization": f"Bearer {settings.mcp_auth_token}"} if service == "mcp_server" else {})
+                results["services"][service] = {"ok": response.is_success, "status_code": response.status_code}
+            except httpx.HTTPError as exc:
+                results["services"][service] = {"ok": False, "error": type(exc).__name__}
+    if operation == "services":
+        return results
+    return {"scope": results["scope"], "services": results["services"], "timestamp": datetime.utcnow().isoformat()}
+
+
+async def _execute_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Point d’entrée unique du Tool Broker, avec erreurs renvoyées au modèle."""
+    try:
+        destructive = (
+            tool_name == "n8n_webhook"
+            or (tool_name == "mcp_filesystem" and arguments.get("operation") in {"write", "delete"})
+            or (tool_name == "mcp_github" and arguments.get("operation") == "create_pr")
+            or (tool_name == "google_calendar" and arguments.get("operation") == "create")
+        )
+        if destructive and arguments.get("confirmed") is not True:
+            return {"requires_confirmation": True, "tool": tool_name, "message": "Demande une confirmation explicite à l’utilisateur avant cette action."}
+        if tool_name == "n8n_webhook":
+            return await _call_n8n_webhook(arguments)
+        if tool_name.startswith("mcp_"):
+            return await _call_mcp(tool_name, arguments)
+        if tool_name == "server_diagnostics":
+            return await _call_server_diagnostics(arguments)
+        if tool_name == "google_gmail":
+            return await _call_google_gmail(arguments)
+        if tool_name == "google_calendar":
+            return await _call_google_calendar(arguments)
+        if tool_name == "google_drive":
+            return await _call_google_drive(arguments)
+        return {"error": f"Outil inconnu : {tool_name}"}
+    except HTTPException as exc:
+        return {"error": str(exc.detail), "status_code": exc.status_code}
+    except Exception as exc:
+        LOGGER.exception("Outil %s en erreur", tool_name)
+        return {"error": f"Erreur contrôlée de l’outil {tool_name}: {type(exc).__name__}"}
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +1074,50 @@ def _validate_conversation_options(agent_name: Optional[str], tool_names: List[s
 
 
 CONVERSATIONS: Dict[str, ConversationRecord] = _load_conversations()
+
+
+@app.post("/api/conversations/{conversation_id}/attachments", response_model=Attachment)
+async def upload_attachment(conversation_id: str, file: UploadFile = File(...), _: bool = Depends(verify_token)):
+    """Stocke une pièce jointe privée et contrôlée pour une conversation."""
+    if conversation_id not in CONVERSATIONS:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    original_name = Path(file.filename or "piece-jointe").name
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in ALLOWED_ATTACHMENT_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Type de fichier non pris en charge.")
+    attachment_id = uuid4().hex
+    directory = Path(settings.upload_dir) / conversation_id
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"{attachment_id}{suffix}"
+    size = 0
+    try:
+        with destination.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > settings.max_upload_bytes:
+                    raise HTTPException(status_code=413, detail="La pièce jointe dépasse la limite de 20 Mo.")
+                output.write(chunk)
+    except HTTPException:
+        destination.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Impossible d’enregistrer la pièce jointe.") from exc
+    finally:
+        await file.close()
+    extracted = bool(_extract_attachment_text(destination).strip())
+    return Attachment(id=attachment_id, name=original_name[:180], mime_type=file.content_type or mimetypes.guess_type(original_name)[0] or "application/octet-stream", size=size, extracted=extracted)
+
+
+@app.delete("/api/conversations/{conversation_id}/attachments/{attachment_id}")
+async def delete_attachment(conversation_id: str, attachment_id: str, _: bool = Depends(verify_token)):
+    if conversation_id not in CONVERSATIONS:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    path = _attachment_path(attachment_id)
+    if not path or path.parent.name != conversation_id:
+        raise HTTPException(status_code=404, detail="Pièce jointe introuvable")
+    path.unlink(missing_ok=True)
+    return {"status": "deleted", "id": attachment_id}
 
 
 @app.get("/api/conversations")
@@ -1012,6 +1308,217 @@ async def update_settings(upd: SettingsUpdate, _: bool = Depends(verify_token)):
         ],
         "message": "Les paramètres sont sauvegardés et pris en compte immédiatement.",
     }
+
+
+# ---------------------------------------------------------------------------
+# Connecteurs Google OAuth (tokens chiffrés côté serveur)
+# ---------------------------------------------------------------------------
+GOOGLE_SCOPES = [
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/drive.file",
+]
+CONNECTORS_PATH = Path("/data/connectors.json")
+OAUTH_STATES_PATH = Path("/data/oauth-states.json")
+
+
+def _google_fernet() -> Fernet:
+    secret = _usable_value(settings.hermes_jwt_secret) or _usable_value(os.getenv("HERMES_SESSION_SECRET"))
+    if not secret:
+        raise HTTPException(status_code=503, detail="Le secret Hermes est nécessaire pour chiffrer les connexions Google.")
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+    return Fernet(key)
+
+
+def _read_connector_store() -> Dict[str, str]:
+    if not CONNECTORS_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(CONNECTORS_PATH.read_text())
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_connector_store(store: Dict[str, str]) -> None:
+    CONNECTORS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CONNECTORS_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(store, ensure_ascii=False))
+    os.chmod(temporary, 0o600)
+    temporary.replace(CONNECTORS_PATH)
+
+
+def _read_google_connector() -> Dict[str, Any]:
+    encrypted = _read_connector_store().get("google")
+    if not encrypted:
+        return {}
+    try:
+        return json.loads(_google_fernet().decrypt(encrypted.encode()).decode())
+    except (InvalidToken, ValueError, TypeError):
+        return {}
+
+
+def _write_google_connector(data: Dict[str, Any]) -> None:
+    store = _read_connector_store()
+    encrypted = _google_fernet().encrypt(json.dumps(data, ensure_ascii=False).encode()).decode()
+    store["google"] = encrypted
+    _write_connector_store(store)
+
+
+def _google_redirect_uri() -> str:
+    return _usable_value(settings.google_redirect_uri) or "https://hermes.eaumalik.com/api/hermes/connectors/google/callback"
+
+
+@app.get("/api/connectors")
+async def list_connectors(_: bool = Depends(verify_token)):
+    google = _read_google_connector()
+    return {
+        "connectors": [{
+            "id": "google",
+            "name": "Google Workspace",
+            "configured": bool(_usable_value(settings.google_client_id) and _usable_value(settings.google_client_secret)),
+            "connected": bool(google.get("refresh_token") or google.get("access_token")),
+            "email": google.get("email"),
+            "services": ["Gmail", "Agenda", "Drive"],
+        }]
+    }
+
+
+@app.get("/api/connectors/google/start")
+async def start_google_oauth(_: bool = Depends(verify_token)):
+    google_client_id = _usable_value(settings.google_client_id)
+    google_client_secret = _usable_value(settings.google_client_secret)
+    if not google_client_id or not google_client_secret:
+        raise HTTPException(status_code=503, detail="Configurez GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET sur le serveur.")
+    state = secrets.token_urlsafe(32)
+    states = {state: time.time() + 600}
+    OAUTH_STATES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OAUTH_STATES_PATH.write_text(json.dumps(states))
+    query = {
+        "client_id": google_client_id,
+        "redirect_uri": _google_redirect_uri(),
+        "response_type": "code",
+        "access_type": "offline",
+        "prompt": "consent",
+        "scope": " ".join(GOOGLE_SCOPES),
+        "state": state,
+    }
+    from urllib.parse import urlencode
+    return {"authorization_url": "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(query)}
+
+
+@app.get("/api/connectors/google/callback")
+async def google_oauth_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    if error:
+        return RedirectResponse("/settings?connector=google&status=cancelled")
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Réponse OAuth Google incomplète.")
+    states = json.loads(OAUTH_STATES_PATH.read_text()) if OAUTH_STATES_PATH.exists() else {}
+    expires_at = states.pop(state, 0)
+    OAUTH_STATES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OAUTH_STATES_PATH.write_text(json.dumps(states))
+    if not expires_at or expires_at < time.time():
+        raise HTTPException(status_code=400, detail="État OAuth expiré. Recommencez la connexion Google.")
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": _usable_value(settings.google_client_id),
+            "client_secret": _usable_value(settings.google_client_secret),
+            "redirect_uri": _google_redirect_uri(),
+            "grant_type": "authorization_code",
+        })
+        if not response.is_success:
+            raise HTTPException(status_code=502, detail="Google a refusé la connexion OAuth.")
+        token = response.json()
+        user_response = await client.get("https://openidconnect.googleapis.com/v1/userinfo", headers={"Authorization": f"Bearer {token.get('access_token', '')}"})
+    previous = _read_google_connector()
+    _write_google_connector({
+        "access_token": token.get("access_token", ""),
+        "refresh_token": token.get("refresh_token") or previous.get("refresh_token", ""),
+        "expires_at": time.time() + int(token.get("expires_in", 3600)),
+        "email": user_response.json().get("email") if user_response.is_success else previous.get("email"),
+    })
+    return RedirectResponse("/settings?connector=google&status=connected")
+
+
+@app.delete("/api/connectors/google")
+async def disconnect_google(_: bool = Depends(verify_token)):
+    store = _read_connector_store()
+    store.pop("google", None)
+    _write_connector_store(store)
+    return {"status": "disconnected"}
+
+
+async def _google_access_token() -> str:
+    connector = _read_google_connector()
+    if not connector:
+        raise HTTPException(status_code=409, detail="Connectez d’abord Google dans Configuration → Connecteurs.")
+    if connector.get("access_token") and float(connector.get("expires_at", 0)) > time.time() + 60:
+        return connector["access_token"]
+    refresh_token = connector.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=409, detail="La connexion Google doit être renouvelée.")
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post("https://oauth2.googleapis.com/token", data={
+            "client_id": _usable_value(settings.google_client_id),
+            "client_secret": _usable_value(settings.google_client_secret),
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        })
+    if not response.is_success:
+        raise HTTPException(status_code=502, detail="Impossible de renouveler la connexion Google.")
+    token = response.json()
+    connector.update({"access_token": token.get("access_token", ""), "expires_at": time.time() + int(token.get("expires_in", 3600))})
+    _write_google_connector(connector)
+    return connector["access_token"]
+
+
+async def _google_api(method: str, url: str, *, params: Optional[Dict[str, Any]] = None, json_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    token = await _google_access_token()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.request(method, url, params=params, json=json_body, headers={"Authorization": f"Bearer {token}"})
+    if not response.is_success:
+        raise HTTPException(status_code=502, detail=f"Google API a renvoyé HTTP {response.status_code}.")
+    return response.json()
+
+
+async def _call_google_gmail(args: Dict[str, Any]) -> Dict[str, Any]:
+    operation = args.get("operation", "search")
+    if operation == "search":
+        data = await _google_api("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages", params={"q": str(args.get("query") or "newer_than:30d")[:500], "maxResults": 20})
+        return {"messages": data.get("messages", []), "result_size_estimate": data.get("resultSizeEstimate", 0)}
+    message_id = str(args.get("message_id") or "")
+    if not message_id:
+        return {"error": "message_id est obligatoire pour lire un email."}
+    data = await _google_api("GET", f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}", params={"format": "full"})
+    return {"id": data.get("id"), "thread_id": data.get("threadId"), "snippet": data.get("snippet"), "payload": data.get("payload", {}).get("headers", [])}
+
+
+async def _call_google_calendar(args: Dict[str, Any]) -> Dict[str, Any]:
+    calendar_id = str(args.get("calendar_id") or "primary")
+    if args.get("operation", "list") == "create":
+        if not args.get("confirmed"):
+            return {"requires_confirmation": True, "action": "create_calendar_event", "summary": args.get("summary"), "start": args.get("start"), "end": args.get("end")}
+        return await _google_api("POST", f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events", json_body={"summary": args.get("summary", "Hermes"), "start": {"dateTime": args.get("start")}, "end": {"dateTime": args.get("end")}})
+    params = {"singleEvents": "true", "orderBy": "startTime", "maxResults": 50}
+    if args.get("time_min"): params["timeMin"] = args["time_min"]
+    if args.get("time_max"): params["timeMax"] = args["time_max"]
+    data = await _google_api("GET", f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events", params=params)
+    return {"items": data.get("items", [])}
+
+
+async def _call_google_drive(args: Dict[str, Any]) -> Dict[str, Any]:
+    if args.get("operation", "search") == "search":
+        query = str(args.get("query") or "")[:200].replace("'", "\\'")
+        data = await _google_api("GET", "https://www.googleapis.com/drive/v3/files", params={"q": f"name contains '{query}' and trashed = false", "pageSize": 30, "fields": "files(id,name,mimeType,modifiedTime,size,webViewLink)"})
+        return {"files": data.get("files", [])}
+    file_id = str(args.get("file_id") or "")
+    if not file_id:
+        return {"error": "file_id est obligatoire pour lire un fichier Drive."}
+    return await _google_api("GET", f"https://www.googleapis.com/drive/v3/files/{file_id}", params={"alt": "json", "fields": "id,name,mimeType,modifiedTime,size,webViewLink,description"})
 
 
 @app.post("/api/settings/test/minimax")

@@ -1,12 +1,11 @@
 export type ApiError = Error & { status?: number };
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   const response = await fetch(`/api/hermes/${path.replace(/^\//, '')}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
+    headers,
     cache: 'no-store',
   });
 
@@ -28,6 +27,11 @@ export const api = {
   post: <T>(path: string, body: unknown, options: Omit<RequestInit, 'method' | 'body'> = {}) => request<T>(path, { ...options, method: 'POST', body: JSON.stringify(body) }),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  upload: async <T>(path: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<T>(path, { method: 'POST', body: form });
+  },
 };
 
 export type Agent = {
@@ -45,6 +49,15 @@ export type ConversationMessage = {
   content: string;
   time: string;
   reasoning_details?: Record<string, unknown>[];
+  attachments?: Attachment[];
+};
+
+export type Attachment = {
+  id: string;
+  name: string;
+  mime_type: string;
+  size: number;
+  extracted: boolean;
 };
 
 export type Conversation = {

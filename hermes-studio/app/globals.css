@@ -135,3 +135,41 @@ h3 { font-size: 1.08rem; font-weight: 700; }
 :root[data-theme="light"] .key-field select, :root[data-theme="light"] .conversation-config-grid select, :root[data-theme="light"] .conversation-config-grid input { background: rgba(235,240,248,.72); }
 
 @media (max-width: 820px) { .sidebar-is-collapsed .sidebar { width: 264px; flex-basis: 264px; padding-inline: 14px; }.sidebar-is-collapsed .sidebar-label { display: initial; }.sidebar-is-collapsed .brand-row { flex-direction: row; gap: 0; padding-inline: 8px; }.sidebar-is-collapsed .brand { justify-content: flex-start; }.sidebar-is-collapsed .new-chat { justify-content: flex-start; padding-inline: 12px; }.sidebar-is-collapsed .nav-link { justify-content: flex-start; padding-inline: 12px; }.sidebar-is-collapsed .connection-card { justify-content: flex-start; padding-inline: 12px; }.sidebar-toggle { display: none; }.history-list { max-height: 32vh; }.conversation-config-grid { grid-template-columns: 1fr; } }
+
+/* Chat viewport: le scroll appartient aux messages, jamais à la page entière. */
+.workspace-main { height: 100vh; min-height: 0; }
+.chat-layout { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.chat-body { flex: 1 1 auto; min-height: 0; }
+.messages-column { min-height: 0; overflow: hidden; }
+.message-list { min-height: 0; overscroll-behavior: contain; }
+.composer-wrap { flex: 0 0 auto; }
+.context-panel { min-height: 0; }
+.message-text { color: var(--text); }
+.assistant-message .message-text { color: var(--text); }
+.message-attachments, .attachment-strip { display: flex; flex-wrap: wrap; gap: 7px; }
+.message-attachments { margin: 0 0 9px; }
+.attachment-strip { min-height: 0; margin-bottom: 8px; }
+.attachment-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--muted); background: rgba(157,140,255,.08); font-size: 11px; }
+.attachment-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-chip button { display: inline-grid; place-items: center; width: 20px; height: 20px; color: var(--dim); background: transparent; }
+.attachment-chip button:hover { color: var(--danger); }
+.attachment-uploading, .attachment-error { align-self: center; color: var(--dim); font-size: 10px; }
+.attachment-error { color: var(--danger); }
+:root[data-theme="light"] .message-text, :root[data-theme="light"] .assistant-message .message-text { color: #172033; }
+:root[data-theme="light"] .message-meta span, :root[data-theme="light"] .composer-hint { color: #65738a; }
+:root[data-theme="light"] .composer textarea { color: #172033; }
+:root[data-theme="light"] .composer textarea::placeholder { color: #718097; }
+:root[data-theme="light"] .attachment-chip { color: #3c4a61; background: rgba(109,93,231,.08); }
+.connector-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.connector-card > div { display: grid; gap: 3px; min-width: 0; }
+.connector-card strong { font-size: 12px; }
+.connector-card small { color: var(--muted); font-size: 10px; }
+.connector-action { min-height: 32px; padding-inline: 10px; white-space: nowrap; font-size: 10px; }
+
+@media (max-width: 820px) {
+  .workspace-main { height: 100dvh; }
+  .chat-layout { height: 100%; }
+  .chat-body { display: flex; flex-direction: column; min-height: 0; height: auto; flex: 1 1 auto; }
+  .messages-column { min-height: 0; flex: 1 1 auto; }
+  .message-list { min-height: 0; }
+}
