@@ -667,7 +667,7 @@ async def chat_stream(req: ChatRequest, _: bool = Depends(verify_token)):
                         if not content:
                             yield f"data: {json.dumps({'event': 'error', 'message': 'MiniMax a renvoyé une réponse vide.'}, ensure_ascii=False)}\n\n"
                             return
-                yield f'data: {json.dumps({"event": "done", "content": content, "model": final_model or model, "finish_reason": finish_reason or "stop"}, ensure_ascii=False)}\n\n'
+                        yield f'data: {json.dumps({"event": "done", "content": content, "model": final_model or model, "finish_reason": finish_reason or "stop"}, ensure_ascii=False)}\n\n'
                         return
 
                 # Épuisé les 5 itérations
