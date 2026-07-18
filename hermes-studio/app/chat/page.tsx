@@ -38,6 +38,7 @@ export default function ChatPage() {
   const activeName = activeAgent?.name || 'Hermes Core';
   const activePrompt = activeAgent?.system_prompt || corePrompt;
   const activeTools = activeAgent ? activeAgent.tools : coreTools;
+  const activeModel = activeAgent?.model || providerStatus?.model || 'Modèle à configurer';
   const providerLabel = providerStatus?.minimax_configured ? 'Clé Minimax à vérifier' : 'Minimax à configurer';
 
   useEffect(() => {
@@ -157,7 +158,7 @@ export default function ChatPage() {
     </header>
     <div className="chat-body">
       <section className="messages-column">
-        <div className="context-strip"><span><span className={`status-dot ${providerStatus?.minimax_configured ? 'online' : ''}`} /> {providerLabel}</span><span>{providerStatus?.model || 'Modèle à configurer'}</span><span>Contexte 8k</span></div>
+        <div className="context-strip"><span><span className={`status-dot ${providerStatus?.minimax_configured ? 'online' : ''}`} /> {providerLabel}</span><span>{activeModel}</span><span>{activeAgent ? `${activeAgent.max_tokens || 2000} tokens max` : 'Contexte 8k'}</span></div>
         <div className="message-list">{messages.map((message, index) => <Message key={`${message.time}-${index}`} message={message} index={index} onCopy={copyMessage} onRegenerate={regenerate} copied={copied === index} />)}{loading && <div className="message assistant-message"><span className="message-avatar hermes-avatar"><Sparkles size={15} /></span><div className="message-content"><div className="message-meta"><strong>{activeName}</strong><span>réfléchit</span></div><div className="thinking"><span /><span /><span /></div></div></div>}</div>
         <div className="composer-wrap">
           <div className="suggestion-row"><button onClick={() => setInput('Analyse l’état de mon installation Hermes')}><WandSparkles size={14} /> Analyser mon installation</button><button onClick={() => setInput('Crée un agent spécialisé pour mon projet')}><Bot size={14} /> Créer un agent</button></div>

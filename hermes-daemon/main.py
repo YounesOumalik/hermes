@@ -137,7 +137,10 @@ class N8nWebhookRequest(BaseModel):
 class AgentConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     system_prompt: str
-    model: Optional[str] = None
+    description: str = Field(default="", max_length=240)
+    model: Optional[str] = Field(default=None, max_length=120)
+    temperature: float = Field(default=0.7, ge=0, le=2)
+    max_tokens: int = Field(default=2000, ge=256, le=16000)
     tools: List[str] = Field(default_factory=list)
 
 
@@ -249,8 +252,8 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
     payload: Dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": req.temperature,
-        "max_completion_tokens": req.max_tokens,
+        "temperature": selected_agent.temperature if selected_agent else req.temperature,
+        "max_completion_tokens": selected_agent.max_tokens if selected_agent else req.max_tokens,
         # MiniMax renvoie alors la réponse finale dans content et le raisonnement
         # séparément. Celui-ci est conservé, mais jamais affiché dans le chat.
         "reasoning_split": True,
@@ -671,6 +674,26 @@ async def list_agents(_: bool = Depends(verify_token)):
 async def create_agent(agent: AgentConfig, _: bool = Depends(verify_token)):
     if agent.name in AGENTS:
         raise HTTPException(status_code=409, detail="Un agent porte déjà ce nom.")
+    unknown_tools = sorted(set(agent.tools) - set(TOOL_REGISTRY))
+    if unknown_tools:
+        raise HTTPException(status_code=400, detail=f"Outils inconnus: {', '.join(unknown_tools)}")
+    AGENTS[agent.name] = agent
+    _save_agents()
+    return agent
+
+
+@app.put("/api/agents/{current_name}", response_model=AgentConfig)
+async def update_agent(current_name: str, agent: AgentConfig, _: bool = Depends(verify_token)):
+    """Modifie un agent, y compris son nom, modèle, paramètres et outils."""
+    if current_name not in AGENTS:
+        raise HTTPException(status_code=404, detail="Agent introuvable")
+    if agent.name != current_name and agent.name in AGENTS:
+        raise HTTPException(status_code=409, detail="Un agent porte déjà ce nom.")
+    unknown_tools = sorted(set(agent.tools) - set(TOOL_REGISTRY))
+    if unknown_tools:
+        raise HTTPException(status_code=400, detail=f"Outils inconnus: {', '.join(unknown_tools)}")
+    if agent.name != current_name:
+        del AGENTS[current_name]
     AGENTS[agent.name] = agent
     _save_agents()
     return agent
