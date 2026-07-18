@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Bot, Boxes, ChevronDown, Command, Home, MessageSquare, Plus, Settings, Sparkles, Wrench, X } from 'lucide-react';
+import { Bot, Boxes, ChevronDown, Command, Home, LogOut, MessageSquare, Plus, Settings, Sparkles, Wrench, X } from 'lucide-react';
 import { useState } from 'react';
 
 const navigation = [
@@ -16,6 +16,13 @@ const navigation = [
 export default function WorkspaceShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  if (pathname === '/login') return <>{children}</>;
+
+  async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    window.location.assign('/login');
+  }
 
   return (
     <div className="workspace-shell">
@@ -62,7 +69,7 @@ export default function WorkspaceShell({ children }: { children: React.ReactNode
             <div><strong>Hermes opérationnel</strong><small>Daemon · MCP · n8n</small></div>
             <ChevronDown size={14} className="muted-icon" />
           </div>
-          <div className="user-row"><span className="avatar">YO</span><span><strong>Younes</strong><small>Workspace privé</small></span><Boxes size={15} className="muted-icon" /></div>
+          <div className="user-row"><span className="avatar">YO</span><span><strong>Younes</strong><small>Workspace privé</small></span><button className="icon-button" onClick={logout} aria-label="Se déconnecter" title="Se déconnecter"><LogOut size={15} /></button><Boxes size={15} className="muted-icon" /></div>
         </div>
       </aside>
 

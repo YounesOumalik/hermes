@@ -36,6 +36,7 @@ gen_secret() {
 log "Génération des secrets…"
 N8N_KEY="$(gen_secret)"
 JWT_SECRET="$(gen_secret)"
+SESSION_SECRET="$(gen_secret)"
 MCP_TOKEN="$(gen_secret)"
 POSTGRES_PASSWORD="$(gen_secret)"
 REDIS_PASSWORD="$(gen_secret)"
@@ -45,6 +46,7 @@ cp "${TEMPLATE}" "${ENV_FILE}"
 
 sed -i "s|__N8N_ENCRYPTION_KEY__|${N8N_KEY}|g" "${ENV_FILE}"
 sed -i "s|__HERMES_JWT_SECRET__|${JWT_SECRET}|g" "${ENV_FILE}"
+sed -i "s|__HERMES_SESSION_SECRET__|${SESSION_SECRET}|g" "${ENV_FILE}"
 sed -i "s|__MCP_AUTH_TOKEN__|${MCP_TOKEN}|g" "${ENV_FILE}"
 sed -i "s|__POSTGRES_PASSWORD__|${POSTGRES_PASSWORD}|g" "${ENV_FILE}"
 sed -i "s|__REDIS_PASSWORD__|${REDIS_PASSWORD}|g" "${ENV_FILE}"
@@ -58,6 +60,7 @@ echo
 echo "Variables générées :"
 echo "  N8N_ENCRYPTION_KEY  = ${N8N_KEY:0:8}…"
 echo "  HERMES_JWT_SECRET   = ${JWT_SECRET:0:8}…"
+echo "  HERMES_SESSION_SECRET = ${SESSION_SECRET:0:8}…"
 echo "  MCP_AUTH_TOKEN      = ${MCP_TOKEN:0:8}…"
 echo "  POSTGRES_PASSWORD   = ${POSTGRES_PASSWORD:0:8}…"
 echo
