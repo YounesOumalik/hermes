@@ -91,6 +91,26 @@ class ChatResponse(BaseModel):
     agent_name: Optional[str] = None
 
 
+def _normalise_usage(raw_usage: Any) -> Dict[str, int]:
+    """Garde uniquement les compteurs numériques compatibles avec l'API Hermes.
+
+    Certains fournisseurs compatibles OpenAI ajoutent des détails imbriqués,
+    par exemple ``completion_tokens_details``. Ils ne correspondent pas au
+    contrat ``Dict[str, int]`` exposé par Hermes et ne doivent pas faire
+    échouer une réponse pourtant valide.
+    """
+    defaults = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    if not isinstance(raw_usage, dict):
+        return defaults
+
+    usage = {
+        key: value
+        for key, value in raw_usage.items()
+        if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool)
+    }
+    return {**defaults, **usage}
+
+
 class ToolCallRequest(BaseModel):
     tool_name: str = Field(..., description="Nom du tool à appeler")
     arguments: Dict[str, Any] = Field(default_factory=dict)
@@ -226,7 +246,7 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
             return ChatResponse(
                 content=content,
                 model=data.get("model", model),
-                usage=data.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
+                usage=_normalise_usage(data.get("usage")),
                 finish_reason=choice.get("finish_reason", "stop"),
                 agent_name=selected_agent.name if selected_agent else None,
             )
