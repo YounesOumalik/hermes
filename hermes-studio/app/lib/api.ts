@@ -40,6 +40,27 @@ export type Agent = {
   tools: string[];
 };
 
+export type ConversationMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+  time: string;
+  reasoning_details?: Record<string, unknown>[];
+};
+
+export type Conversation = {
+  id: string;
+  title: string;
+  agent_name?: string | null;
+  model?: string | null;
+  tool_names: string[];
+  context_tokens: number;
+  messages: ConversationMessage[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConversationSummary = Omit<Conversation, 'messages'>;
+
 export type Tool = {
   name: string;
   description: string;

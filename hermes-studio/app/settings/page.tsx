@@ -11,6 +11,7 @@ type Status = {
   telegram_running: boolean;
   telegram_bot_username?: string | null;
   telegram_last_error?: string | null;
+  telegram_agent_name?: string | null;
   github_configured: boolean;
   model: string;
   minimax_base_url: string;
@@ -26,11 +27,13 @@ type TelegramTest = {
 
 export default function SettingsPage() {
   const [status, setStatus] = useState<Status | null>(null);
+  const [agents, setAgents] = useState<{ name: string }[]>([]);
   const [minimaxKey, setMinimaxKey] = useState('');
   const [minimaxBaseUrl, setMinimaxBaseUrl] = useState('');
   const [minimaxModel, setMinimaxModel] = useState('');
   const [telegramToken, setTelegramToken] = useState('');
   const [allowedChatId, setAllowedChatId] = useState('');
+  const [telegramAgentName, setTelegramAgentName] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [message, setMessage] = useState('');
   const [messageKind, setMessageKind] = useState<'success' | 'error'>('success');
@@ -44,13 +47,17 @@ export default function SettingsPage() {
       setStatus(nextStatus);
       setMinimaxBaseUrl((current) => current || nextStatus.minimax_base_url);
       setMinimaxModel((current) => current || nextStatus.model);
+      setTelegramAgentName(nextStatus.telegram_agent_name || '');
     } catch (error) {
       setMessageKind('error');
       setMessage(error instanceof Error ? error.message : 'Impossible de charger la configuration.');
     }
   }
 
-  useEffect(() => { void loadStatus(); }, []);
+  useEffect(() => {
+    void loadStatus();
+    void api.get<{ agents: { name: string }[] }>('api/agents').then((data) => setAgents(data.agents || [])).catch(() => setAgents([]));
+  }, []);
 
   async function saveKeys() {
     setSaving(true);
@@ -62,6 +69,7 @@ export default function SettingsPage() {
       if (minimaxModel) body.minimax_model = minimaxModel;
       if (telegramToken) body.telegram_bot_token = telegramToken;
       if (allowedChatId) body.allowed_chat_id = allowedChatId;
+      body.telegram_agent_name = telegramAgentName;
       if (githubToken) body.github_token = githubToken;
       await api.post('api/settings/update', body);
       setMinimaxKey('');
@@ -122,12 +130,12 @@ export default function SettingsPage() {
   const telegramValue = status?.telegram_running
     ? status.telegram_bot_username ? `@${status.telegram_bot_username}` : 'Bot actif'
     : status?.telegram_configured ? 'À autoriser' : 'À configurer';
-  const telegramMeta = status?.telegram_last_error || (status?.telegram_chat_configured ? 'Chat privé autorisé' : 'Ajoutez un Chat ID pour répondre');
+  const telegramMeta = status?.telegram_last_error || (status?.telegram_agent_name ? `Agent : ${status.telegram_agent_name}` : status?.telegram_chat_configured ? 'Chat privé autorisé · modèle global' : 'Ajoutez un Chat ID pour répondre');
 
   return <div className="page">
     <header className="page-header"><div><div className="eyebrow"><span className="eyebrow-line" /> WORKSPACE</div><h1>Configuration</h1><p className="page-subtitle">Connectez les services qui donnent de la profondeur à Hermes.</p></div><button className="ghost-button" onClick={() => void loadStatus()}><RefreshCw size={15} /> Actualiser</button></header>
     <section className="settings-status-grid"><StatusCard label="MiniMax" value={status?.minimax_configured ? 'Clé présente' : 'À configurer'} ok={Boolean(status?.minimax_configured)} meta={status?.minimax_configured ? 'Testez la clé avant utilisation' : 'Ajoutez une clé API'} /><StatusCard label="Telegram" value={telegramValue} ok={Boolean(status?.telegram_running)} meta={telegramMeta} /><StatusCard label="MCP Server" value={status?.mcp_ready ? 'Prêt' : 'À vérifier'} ok={Boolean(status?.mcp_ready)} meta="Outils et contexte" /><StatusCard label="Sécurité" value="Serveur privé" ok meta="Clés jamais renvoyées" /></section>
-    <div className="settings-layout"><section className="panel settings-panel"><div className="panel-heading"><div><div className="eyebrow">SECRETS SERVEUR</div><h2>Clés & intégrations</h2></div><span className="secure-badge"><ShieldCheck size={14} /> Accès restreint</span></div><p className="panel-intro">Les secrets restent côté serveur. Une clé ou un modèle enregistré ici est utilisé immédiatement par Hermes, sans redémarrage.</p><KeyField label="MiniMax API Key" value={minimaxKey} onChange={setMinimaxKey} placeholder={status?.minimax_configured ? 'Clé déjà configurée · saisir pour remplacer' : 'Clé créée dans MiniMax Platform'} /><TextField label="MiniMax Base URL" value={minimaxBaseUrl} onChange={setMinimaxBaseUrl} placeholder="https://api.minimax.io/v1" /><TextField label="MiniMax Model" value={minimaxModel} onChange={setMinimaxModel} placeholder="MiniMax-M2.7" /><KeyField label="Telegram Bot Token" value={telegramToken} onChange={setTelegramToken} placeholder={status?.telegram_configured ? 'Token déjà configuré · saisir pour remplacer' : '123456:ABC-DEF…'} /><TextField label="Telegram Chat ID autorisé" value={allowedChatId} onChange={setAllowedChatId} placeholder={status?.telegram_chat_configured ? 'Un chat est déjà autorisé · saisir pour remplacer' : 'Envoyez un message au bot pour recevoir votre ID'} /><small className="field-help">Seul ce chat peut demander des réponses à Hermes. Sans cet ID, le bot vous le communique mais ne consomme pas MiniMax.</small><KeyField label="GitHub Token" value={githubToken} onChange={setGithubToken} placeholder={status?.github_configured ? 'Token déjà configuré · saisir pour remplacer' : 'ghp_…'} /><div className="form-actions"><button className="button button-primary" onClick={() => void saveKeys()} disabled={saving}><Save size={15} /> {saving ? 'Enregistrement…' : 'Enregistrer les changements'}</button><button className="button button-secondary" onClick={() => void testMinimax()} disabled={testingMinimax || !status?.minimax_configured}><TestTube2 size={15} /> {testingMinimax ? 'Test…' : 'Tester MiniMax'}</button><button className="button button-secondary" onClick={() => void testTelegram()} disabled={testingTelegram || !status?.telegram_configured}><TestTube2 size={15} /> {testingTelegram ? 'Test…' : 'Tester Telegram'}</button></div>{message && <div className={`form-message ${messageKind === 'error' ? 'form-error' : ''}`}><CheckCircle2 size={15} /> {message}</div>}</section><aside className="settings-side"><div className="panel"><div className="panel-heading"><div><div className="eyebrow">GUIDES</div><h3>Obtenir vos clés</h3></div><KeyRound size={18} className="muted-icon" /></div><a className="resource-link" href="https://platform.minimax.io/" target="_blank" rel="noreferrer"><span>MiniMax Platform</span><ExternalLink size={14} /></a><a className="resource-link" href="https://t.me/BotFather" target="_blank" rel="noreferrer"><span>Telegram BotFather</span><ExternalLink size={14} /></a><a className="resource-link" href="https://github.com/settings/tokens/new" target="_blank" rel="noreferrer"><span>GitHub Developer Settings</span><ExternalLink size={14} /></a></div><div className="panel privacy-panel"><ShieldCheck size={20} /><strong>Activer Telegram en sécurité</strong><p>Enregistrez le token, envoyez un message au bot pour recevoir votre Chat ID, puis collez cet ID ici. Le bot répond alors uniquement à votre chat.</p></div></aside></div>
+    <div className="settings-layout"><section className="panel settings-panel"><div className="panel-heading"><div><div className="eyebrow">SECRETS SERVEUR</div><h2>Clés & intégrations</h2></div><span className="secure-badge"><ShieldCheck size={14} /> Accès restreint</span></div><p className="panel-intro">Les secrets restent côté serveur. Une clé ou un modèle enregistré ici est utilisé immédiatement par Hermes, sans redémarrage.</p><KeyField label="MiniMax API Key" value={minimaxKey} onChange={setMinimaxKey} placeholder={status?.minimax_configured ? 'Clé déjà configurée · saisir pour remplacer' : 'Clé créée dans MiniMax Platform'} /><TextField label="MiniMax Base URL" value={minimaxBaseUrl} onChange={setMinimaxBaseUrl} placeholder="https://api.minimax.io/v1" /><TextField label="MiniMax Model global" value={minimaxModel} onChange={setMinimaxModel} placeholder="MiniMax-M2.7 ou MiniMax-M3" /><KeyField label="Telegram Bot Token" value={telegramToken} onChange={setTelegramToken} placeholder={status?.telegram_configured ? 'Token déjà configuré · saisir pour remplacer' : '123456:ABC-DEF…'} /><TextField label="Telegram Chat ID autorisé" value={allowedChatId} onChange={setAllowedChatId} placeholder={status?.telegram_chat_configured ? 'Un chat est déjà autorisé · saisir pour remplacer' : 'Envoyez un message au bot pour recevoir votre ID'} /><small className="field-help">Seul ce chat peut demander des réponses à Hermes. Sans cet ID, le bot vous le communique mais ne consomme pas MiniMax.</small><label className="key-field"><span>Agent utilisé par Telegram</span><select value={telegramAgentName} onChange={(event) => setTelegramAgentName(event.target.value)}><option value="">Hermes Core · modèle global</option>{agents.map((agent) => <option value={agent.name} key={agent.name}>{agent.name}</option>)}</select><small className="field-help">Si un agent est choisi, Telegram utilise automatiquement son modèle MiniMax et ses instructions.</small></label><KeyField label="GitHub Token" value={githubToken} onChange={setGithubToken} placeholder={status?.github_configured ? 'Token déjà configuré · saisir pour remplacer' : 'ghp_…'} /><div className="form-actions"><button className="button button-primary" onClick={() => void saveKeys()} disabled={saving}><Save size={15} /> {saving ? 'Enregistrement…' : 'Enregistrer les changements'}</button><button className="button button-secondary" onClick={() => void testMinimax()} disabled={testingMinimax || !status?.minimax_configured}><TestTube2 size={15} /> {testingMinimax ? 'Test…' : 'Tester MiniMax'}</button><button className="button button-secondary" onClick={() => void testTelegram()} disabled={testingTelegram || !status?.telegram_configured}><TestTube2 size={15} /> {testingTelegram ? 'Test…' : 'Tester Telegram'}</button></div>{message && <div className={`form-message ${messageKind === 'error' ? 'form-error' : ''}`}><CheckCircle2 size={15} /> {message}</div>}</section><aside className="settings-side"><div className="panel"><div className="panel-heading"><div><div className="eyebrow">GUIDES</div><h3>Obtenir vos clés</h3></div><KeyRound size={18} className="muted-icon" /></div><a className="resource-link" href="https://platform.minimax.io/" target="_blank" rel="noreferrer"><span>MiniMax Platform</span><ExternalLink size={14} /></a><a className="resource-link" href="https://t.me/BotFather" target="_blank" rel="noreferrer"><span>Telegram BotFather</span><ExternalLink size={14} /></a><a className="resource-link" href="https://github.com/settings/tokens/new" target="_blank" rel="noreferrer"><span>GitHub Developer Settings</span><ExternalLink size={14} /></a></div><div className="panel privacy-panel"><ShieldCheck size={20} /><strong>Telegram suit l’agent choisi</strong><p>Choisissez un agent ci-dessus : Telegram reprendra son modèle MiniMax et ses instructions, avec le même verrouillage par Chat ID.</p></div></aside></div>
   </div>;
 }
 

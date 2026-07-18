@@ -19,6 +19,7 @@ import httpx
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     minimax_model: str = DEFAULT_MINIMAX_MODEL
     telegram_bot_token: str = ""
     allowed_chat_id: str = ""
+    telegram_agent_name: str = ""
     n8n_webhook_base_url: str = "http://n8n:5678/webhook"
     mcp_server_url: str = "http://mcp-server:3100"
     mcp_auth_token: str = ""
@@ -84,12 +86,18 @@ class ChatMessage(BaseModel):
     )
 
 
+class ConversationMessage(ChatMessage):
+    time: str = "maintenant"
+
+
 class ChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(..., description="Historique de conversation")
     model: Optional[str] = None
     temperature: float = 0.7
     max_tokens: int = 2000
     tools: Optional[List[Dict[str, Any]]] = None
+    tool_names: Optional[List[str]] = None
+    context_tokens: int = Field(default=200_000, ge=8_192, le=1_000_000)
     agent_name: Optional[str] = Field(default=None, max_length=80)
 
 
@@ -122,6 +130,25 @@ def _normalise_usage(raw_usage: Any) -> Dict[str, int]:
     return {**defaults, **usage}
 
 
+def _trim_messages(messages: List[ChatMessage], context_tokens: int) -> List[ChatMessage]:
+    """Garde les derniers messages dans la fenêtre choisie par la conversation.
+
+    MiniMax ne demande pas un paramètre de fenêtre séparé : la limite est
+    appliquée ici avant l’envoi, avec une estimation prudente de 4 caractères
+    par token.
+    """
+    max_chars = max(32_768, context_tokens * 4)
+    total_chars = 0
+    kept: List[ChatMessage] = []
+    for message in reversed(messages):
+        message_chars = len(message.content)
+        if kept and total_chars + message_chars > max_chars:
+            break
+        kept.append(message)
+        total_chars += message_chars
+    return list(reversed(kept))
+
+
 class ToolCallRequest(BaseModel):
     tool_name: str = Field(..., description="Nom du tool à appeler")
     arguments: Dict[str, Any] = Field(default_factory=dict)
@@ -144,6 +171,35 @@ class AgentConfig(BaseModel):
     tools: List[str] = Field(default_factory=list)
 
 
+class ConversationRecord(BaseModel):
+    id: str
+    title: str = "Nouvelle conversation"
+    agent_name: Optional[str] = None
+    model: Optional[str] = None
+    tool_names: List[str] = Field(default_factory=list)
+    context_tokens: int = Field(default=200_000, ge=8_192, le=1_000_000)
+    messages: List[ConversationMessage] = Field(default_factory=list)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+class ConversationCreate(BaseModel):
+    title: str = "Nouvelle conversation"
+    agent_name: Optional[str] = None
+    model: Optional[str] = None
+    tool_names: List[str] = Field(default_factory=list)
+    context_tokens: int = Field(default=200_000, ge=8_192, le=1_000_000)
+
+
+class ConversationUpdate(BaseModel):
+    title: Optional[str] = None
+    agent_name: Optional[str] = None
+    model: Optional[str] = None
+    tool_names: Optional[List[str]] = None
+    context_tokens: Optional[int] = Field(default=None, ge=8_192, le=1_000_000)
+    messages: Optional[List[ConversationMessage]] = None
+
+
 class SettingsUpdate(BaseModel):
     """Mise à jour des clés API (sécurisée côté serveur)."""
     minimax_api_key: Optional[str] = None
@@ -151,6 +207,7 @@ class SettingsUpdate(BaseModel):
     minimax_model: Optional[str] = None
     telegram_bot_token: Optional[str] = None
     allowed_chat_id: Optional[str] = None
+    telegram_agent_name: Optional[str] = None
     github_token: Optional[str] = None
 
     @field_validator("*")
@@ -177,6 +234,7 @@ class SettingsStatus(BaseModel):
     telegram_running: bool
     telegram_bot_username: Optional[str] = None
     telegram_last_error: Optional[str] = None
+    telegram_agent_name: Optional[str] = None
     github_configured: bool
     model: str
     minimax_base_url: str
@@ -232,7 +290,7 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
         )
 
     messages = []
-    for message in req.messages:
+    for message in _trim_messages(req.messages, req.context_tokens):
         provider_message: Dict[str, Any] = {"role": message.role, "content": message.content}
         if message.role == "assistant" and message.reasoning_details:
             provider_message["reasoning_details"] = message.reasoning_details
@@ -243,10 +301,19 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
         if not selected_agent:
             raise HTTPException(status_code=404, detail="Agent introuvable. Rechargez la liste des agents.")
         system_prompt = selected_agent.system_prompt.strip()
-        if selected_agent.tools:
-            system_prompt += f"\n\nOutils autorisés pour cette mission : {', '.join(selected_agent.tools)}."
+        effective_tool_names = req.tool_names if req.tool_names is not None else selected_agent.tools
+        unknown_tools = sorted(set(effective_tool_names) - set(TOOL_REGISTRY))
+        if unknown_tools:
+            raise HTTPException(status_code=400, detail=f"Outils inconnus: {', '.join(unknown_tools)}")
+        if effective_tool_names:
+            system_prompt += f"\n\nOutils autorisés pour cette mission : {', '.join(effective_tool_names)}."
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
+    elif req.tool_names:
+        unknown_tools = sorted(set(req.tool_names) - set(TOOL_REGISTRY))
+        if unknown_tools:
+            raise HTTPException(status_code=400, detail=f"Outils inconnus: {', '.join(unknown_tools)}")
+        messages.insert(0, {"role": "system", "content": f"Outils autorisés pour cette conversation : {', '.join(req.tool_names)}."})
 
     model = req.model or (selected_agent.model if selected_agent and selected_agent.model else None) or configured_model
     payload: Dict[str, Any] = {
@@ -315,7 +382,7 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_POLL_TIMEOUT_SECONDS = 25
 TELEGRAM_REPLY_LIMIT = 4000
-TELEGRAM_HISTORY_LIMIT = 16
+TELEGRAM_HISTORY_LIMIT = 512
 LOGGER = logging.getLogger("hermes.telegram")
 
 TELEGRAM_STATE: Dict[str, Any] = {
@@ -340,6 +407,11 @@ def _get_telegram_config() -> Tuple[str, str]:
     token = _usable_value(persisted.get("TELEGRAM_BOT_TOKEN")) or _usable_value(settings.telegram_bot_token)
     allowed_chat_id = _usable_value(persisted.get("ALLOWED_CHAT_ID")) or _usable_value(settings.allowed_chat_id)
     return token, allowed_chat_id
+
+
+def _get_telegram_agent_name() -> str:
+    persisted = _read_env_file()
+    return _usable_value(persisted.get("TELEGRAM_AGENT_NAME")) or _usable_value(settings.telegram_agent_name)
 
 
 async def _telegram_api(token: str, method: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 35.0) -> Any:
@@ -378,7 +450,7 @@ async def _send_telegram_message(token: str, chat_id: str, text: str, message_th
         await _telegram_api(token, "sendMessage", payload, timeout=15.0)
 
 
-async def _handle_telegram_message(token: str, allowed_chat_id: str, message: Dict[str, Any]) -> None:
+async def _handle_telegram_message(token: str, allowed_chat_id: str, message: Dict[str, Any], telegram_agent_name: str = "") -> None:
     telegram_chat = message.get("chat") or {}
     chat_id = str(telegram_chat.get("id") or "")
     text = str(message.get("text") or "").strip()
@@ -426,8 +498,17 @@ async def _handle_telegram_message(token: str, allowed_chat_id: str, message: Di
     history.append(ChatMessage(role="user", content=text[:8000]))
     try:
         await _telegram_api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10.0)
+        telegram_agent = AGENTS.get(telegram_agent_name) if telegram_agent_name else None
+        telegram_model = (telegram_agent.model if telegram_agent and telegram_agent.model else _get_minimax_config()[2]).lower()
+        telegram_context_tokens = 1_000_000 if "m3" in telegram_model else 200_000
         response = await chat(
-            ChatRequest(messages=history, temperature=0.7, max_tokens=1200),
+            ChatRequest(
+                messages=history,
+                agent_name=telegram_agent_name or None,
+                temperature=0.7,
+                max_tokens=1200,
+                context_tokens=telegram_context_tokens,
+            ),
             True,
         )
     except HTTPException as exc:
@@ -462,6 +543,7 @@ async def _telegram_polling_loop() -> None:
     active_token = ""
     while True:
         token, allowed_chat_id = _get_telegram_config()
+        telegram_agent_name = _get_telegram_agent_name()
         if not token:
             TELEGRAM_STATE.update({"running": False, "bot_username": None, "last_error": None})
             active_token = ""
@@ -503,7 +585,7 @@ async def _telegram_polling_loop() -> None:
                     offset = update_id + 1
                 message = update.get("message")
                 if isinstance(message, dict):
-                    await _handle_telegram_message(token, allowed_chat_id, message)
+                    await _handle_telegram_message(token, allowed_chat_id, message, telegram_agent_name)
         except asyncio.CancelledError:
             raise
         except TelegramAPIError as exc:
@@ -709,6 +791,108 @@ async def delete_agent(name: str, _: bool = Depends(verify_token)):
 
 
 # ---------------------------------------------------------------------------
+# Conversations persistantes
+# ---------------------------------------------------------------------------
+CONVERSATIONS_PATH = Path("/data/conversations.json")
+
+
+def _load_conversations() -> Dict[str, ConversationRecord]:
+    if not CONVERSATIONS_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(CONVERSATIONS_PATH.read_text())
+        return {conversation_id: ConversationRecord.model_validate(conversation) for conversation_id, conversation in raw.items()}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_conversations() -> None:
+    CONVERSATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CONVERSATIONS_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps({conversation_id: conversation.model_dump() for conversation_id, conversation in CONVERSATIONS.items()}, indent=2, ensure_ascii=False))
+    temporary.replace(CONVERSATIONS_PATH)
+
+
+def _validate_conversation_options(agent_name: Optional[str], tool_names: List[str]) -> None:
+    if agent_name and agent_name not in AGENTS:
+        raise HTTPException(status_code=404, detail="Agent introuvable")
+    unknown_tools = sorted(set(tool_names) - set(TOOL_REGISTRY))
+    if unknown_tools:
+        raise HTTPException(status_code=400, detail=f"Outils inconnus: {', '.join(unknown_tools)}")
+
+
+CONVERSATIONS: Dict[str, ConversationRecord] = _load_conversations()
+
+
+@app.get("/api/conversations")
+async def list_conversations(_: bool = Depends(verify_token)):
+    conversations = sorted(CONVERSATIONS.values(), key=lambda item: item.updated_at, reverse=True)
+    return {"conversations": [conversation.model_dump(exclude={"messages"}) for conversation in conversations]}
+
+
+@app.post("/api/conversations", response_model=ConversationRecord)
+async def create_conversation(payload: ConversationCreate, _: bool = Depends(verify_token)):
+    _validate_conversation_options(payload.agent_name, payload.tool_names)
+    now = datetime.utcnow().isoformat()
+    conversation = ConversationRecord(
+        id=uuid4().hex,
+        title=payload.title.strip() or "Nouvelle conversation",
+        agent_name=payload.agent_name,
+        model=payload.model.strip() if payload.model else None,
+        tool_names=payload.tool_names,
+        context_tokens=payload.context_tokens,
+        created_at=now,
+        updated_at=now,
+    )
+    CONVERSATIONS[conversation.id] = conversation
+    _save_conversations()
+    return conversation
+
+
+@app.get("/api/conversations/{conversation_id}", response_model=ConversationRecord)
+async def get_conversation(conversation_id: str, _: bool = Depends(verify_token)):
+    conversation = CONVERSATIONS.get(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    return conversation
+
+
+@app.put("/api/conversations/{conversation_id}", response_model=ConversationRecord)
+async def update_conversation(conversation_id: str, payload: ConversationUpdate, _: bool = Depends(verify_token)):
+    conversation = CONVERSATIONS.get(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    fields_set = payload.model_fields_set
+    next_agent = payload.agent_name if "agent_name" in fields_set else conversation.agent_name
+    next_tools = payload.tool_names if "tool_names" in fields_set and payload.tool_names is not None else conversation.tool_names
+    _validate_conversation_options(next_agent, next_tools)
+    if payload.title is not None:
+        conversation.title = payload.title.strip() or conversation.title
+    if "agent_name" in fields_set:
+        conversation.agent_name = payload.agent_name
+    if "model" in fields_set:
+        conversation.model = payload.model.strip() if payload.model else None
+    if "tool_names" in fields_set and payload.tool_names is not None:
+        conversation.tool_names = payload.tool_names
+    if "context_tokens" in fields_set and payload.context_tokens is not None:
+        conversation.context_tokens = payload.context_tokens
+    if "messages" in fields_set and payload.messages is not None:
+        conversation.messages = payload.messages
+    conversation.updated_at = datetime.utcnow().isoformat()
+    _save_conversations()
+    return conversation
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str, _: bool = Depends(verify_token)):
+    if conversation_id not in CONVERSATIONS:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    del CONVERSATIONS[conversation_id]
+    _save_conversations()
+    return {"status": "deleted", "id": conversation_id}
+
+
+# ---------------------------------------------------------------------------
 # Endpoints Settings (clés API serveur)
 # ---------------------------------------------------------------------------
 ENV_PATH = Path("/data/hermes.env")  # Volume persistant du daemon
@@ -763,6 +947,7 @@ async def settings_status(_: bool = Depends(verify_token)):
     persisted = _read_env_file()
     api_key, base_url, model = _get_minimax_config()
     telegram_token, allowed_chat_id = _get_telegram_config()
+    telegram_agent_name = _get_telegram_agent_name()
 
     mcp_ready = False
     try:
@@ -782,6 +967,7 @@ async def settings_status(_: bool = Depends(verify_token)):
         telegram_running=bool(TELEGRAM_STATE["running"]),
         telegram_bot_username=TELEGRAM_STATE["bot_username"],
         telegram_last_error=TELEGRAM_STATE["last_error"],
+        telegram_agent_name=telegram_agent_name or None,
         github_configured=bool(persisted.get("GITHUB_TOKEN")),
         model=model,
         minimax_base_url=base_url,
@@ -804,6 +990,8 @@ async def update_settings(upd: SettingsUpdate, _: bool = Depends(verify_token)):
         env["TELEGRAM_BOT_TOKEN"] = upd.telegram_bot_token
     if upd.allowed_chat_id:
         env["ALLOWED_CHAT_ID"] = upd.allowed_chat_id
+    if upd.telegram_agent_name is not None:
+        env["TELEGRAM_AGENT_NAME"] = upd.telegram_agent_name.strip()
     if upd.github_token:
         env["GITHUB_TOKEN"] = upd.github_token
 
@@ -818,6 +1006,7 @@ async def update_settings(upd: SettingsUpdate, _: bool = Depends(verify_token)):
                 ("minimax model", bool(upd.minimax_model)),
                 ("telegram", bool(upd.telegram_bot_token)),
                 ("chat Telegram autorisé", bool(upd.allowed_chat_id)),
+                ("agent Telegram", bool(upd.telegram_agent_name)),
                 ("github", bool(upd.github_token)),
             ] if v
         ],
