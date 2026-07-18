@@ -6,8 +6,8 @@
     "properties": {
       "model": {
         "type": "string",
-        "description": "Nom du modèle Minimax (ex: 'abab6.5s-chat', 'abab6.5t-chat')",
-        "default": "abab6.5s-chat"
+        "description": "Nom du modèle MiniMax compatible OpenAI (ex: 'MiniMax-M2.7')",
+        "default": "MiniMax-M2.7"
       },
       "messages": {
         "type": "array",

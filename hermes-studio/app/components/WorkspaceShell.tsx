@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Bot, Boxes, ChevronDown, Command, Home, LogOut, MessageSquare, Plus, Settings, Sparkles, Wrench, X } from 'lucide-react';
-import { useState } from 'react';
+import { type MouseEvent, useState } from 'react';
 
 const navigation = [
   { href: '/', label: 'Vue d’ensemble', icon: Home },
@@ -24,6 +24,14 @@ export default function WorkspaceShell({ children }: { children: React.ReactNode
     window.location.assign('/login');
   }
 
+  function startNewConversation(event: MouseEvent<HTMLAnchorElement>) {
+    setMobileOpen(false);
+    if (pathname === '/chat') {
+      event.preventDefault();
+      window.location.assign(`/chat?new=${Date.now()}`);
+    }
+  }
+
   return (
     <div className="workspace-shell">
       <button className="mobile-menu-button" aria-label="Ouvrir le menu" onClick={() => setMobileOpen(true)}>
@@ -40,7 +48,7 @@ export default function WorkspaceShell({ children }: { children: React.ReactNode
           <button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="Fermer le menu"><X size={18} /></button>
         </div>
 
-        <Link href="/chat" className="new-chat" onClick={() => setMobileOpen(false)}>
+        <Link href="/chat" className="new-chat" onClick={startNewConversation}>
           <Plus size={17} /> Nouvelle conversation
           <span className="shortcut">⌘ K</span>
         </Link>
