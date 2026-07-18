@@ -5,9 +5,10 @@ import type { ComponentType } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { Agent, api } from '../lib/api';
 
-type ChatMessage = { role: 'user' | 'assistant'; content: string; time: string };
+type ReasoningDetail = Record<string, unknown>;
+type ChatMessage = { role: 'user' | 'assistant'; content: string; time: string; reasoning_details?: ReasoningDetail[] };
 type ProviderStatus = { minimax_configured: boolean; model: string; mcp_ready: boolean };
-type ChatResult = { content: string; model: string; agent_name?: string | null };
+type ChatResult = { content: string; model: string; agent_name?: string | null; reasoning_details?: ReasoningDetail[] | null };
 
 const corePrompt = 'Tu es un orchestrateur précis. Décompose les demandes complexes et utilise les outils uniquement lorsque cela apporte une valeur claire.';
 const coreTools = ['mcp_filesystem', 'mcp_github', 'n8n_webhook'];
@@ -68,11 +69,23 @@ export default function ChatPage() {
     try {
       const response = await api.post<ChatResult>(
         'api/chat',
-        { messages: nextMessages.map(({ role, content }) => ({ role, content })), agent_name: selectedAgentName || undefined },
+        {
+          messages: nextMessages.map(({ role, content, reasoning_details }) => ({
+            role,
+            content,
+            ...(reasoning_details?.length ? { reasoning_details } : {}),
+          })),
+          agent_name: selectedAgentName || undefined,
+        },
         { signal: controller.signal },
       );
       if (!controller.signal.aborted) {
-        setMessages([...nextMessages, { role: 'assistant', content: response.content, time: 'maintenant' }]);
+        setMessages([...nextMessages, {
+          role: 'assistant',
+          content: response.content,
+          time: 'maintenant',
+          ...(response.reasoning_details?.length ? { reasoning_details: response.reasoning_details } : {}),
+        }]);
       }
     } catch (error) {
       if (!controller.signal.aborted) {

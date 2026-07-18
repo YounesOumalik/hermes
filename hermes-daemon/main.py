@@ -72,6 +72,10 @@ app.add_middleware(
 class ChatMessage(BaseModel):
     role: str = Field(..., description="role: system, user, ou assistant")
     content: str = Field(..., description="Contenu du message")
+    reasoning_details: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Raisonnement MiniMax conservé pour la continuité des échanges",
+    )
 
 
 class ChatRequest(BaseModel):
@@ -89,6 +93,7 @@ class ChatResponse(BaseModel):
     usage: Dict[str, int]
     finish_reason: str
     agent_name: Optional[str] = None
+    reasoning_details: Optional[List[Dict[str, Any]]] = None
 
 
 def _normalise_usage(raw_usage: Any) -> Dict[str, int]:
@@ -205,7 +210,12 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
             detail="MiniMax n’est pas configuré. Ajoutez une clé API valide dans Configuration.",
         )
 
-    messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    messages = []
+    for message in req.messages:
+        provider_message: Dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.role == "assistant" and message.reasoning_details:
+            provider_message["reasoning_details"] = message.reasoning_details
+        messages.append(provider_message)
     selected_agent: Optional[AgentConfig] = None
     if req.agent_name:
         selected_agent = AGENTS.get(req.agent_name)
@@ -222,7 +232,10 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
         "model": model,
         "messages": messages,
         "temperature": req.temperature,
-        "max_tokens": req.max_tokens,
+        "max_completion_tokens": req.max_tokens,
+        # MiniMax renvoie alors la réponse finale dans content et le raisonnement
+        # séparément. Celui-ci est conservé, mais jamais affiché dans le chat.
+        "reasoning_split": True,
     }
     if req.tools:
         payload["tools"] = req.tools
@@ -240,15 +253,18 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
             resp.raise_for_status()
             data = resp.json()
             choice = data["choices"][0]
-            content = choice.get("message", {}).get("content")
+            response_message = choice.get("message", {})
+            content = response_message.get("content")
             if not content:
                 raise HTTPException(status_code=502, detail="MiniMax a renvoyé une réponse vide.")
+            reasoning_details = response_message.get("reasoning_details")
             return ChatResponse(
                 content=content,
                 model=data.get("model", model),
                 usage=_normalise_usage(data.get("usage")),
                 finish_reason=choice.get("finish_reason", "stop"),
                 agent_name=selected_agent.name if selected_agent else None,
+                reasoning_details=reasoning_details if isinstance(reasoning_details, list) else None,
             )
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
@@ -548,8 +564,9 @@ async def test_minimax(_: bool = Depends(verify_token)):
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": "Réponds uniquement : OK"}],
-                    "max_tokens": 4,
-                    "temperature": 0,
+                    "max_completion_tokens": 4,
+                    "temperature": 0.1,
+                    "reasoning_split": True,
                 },
             )
             resp.raise_for_status()
