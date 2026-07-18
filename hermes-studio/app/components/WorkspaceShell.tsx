@@ -31,6 +31,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -60,6 +61,11 @@ const navigation = [
   { href: '/tools', label: 'Outils & MCP', icon: Wrench },
   { href: '/settings', label: 'Configuration', icon: Settings },
 ];
+
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 520;
+const SIDEBAR_DEFAULT_WIDTH = 300;
+const SIDEBAR_WIDTH_STORAGE_KEY = 'hermes-sidebar-width';
 
 const palette: AgentPalette[] = [
   { id: 'violet', gradient: 'linear-gradient(135deg, #bcb2ff, #7de7d7)', text: '#1a1530', ring: 'rgba(157,140,255,.45)', soft: 'rgba(157,140,255,.16)' },
@@ -160,11 +166,47 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
   const [busyId, setBusyId] = useState<string>('');
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const tooltipTimer = useRef<number | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(SIDEBAR_DEFAULT_WIDTH);
+  const [showNewChat, setShowNewChat] = useState<boolean>(true);
+  const resizeState = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const isLogin = pathname === '/login';
   const isChatPage = pathname === '/chat';
   const activeConversationId = getActiveConversationIdFromPath();
   const compact = mode === 'compact';
+
+  // Drag-to-resize : on ajuste sidebarWidth en suivant le mouvement X de la souris.
+  const beginResize = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      if (compact) return;
+      event.preventDefault();
+      resizeState.current = { startX: event.clientX, startWidth: sidebarWidth };
+      const onMove = (moveEvent: globalThis.MouseEvent) => {
+        const state = resizeState.current;
+        if (!state) return;
+        const delta = moveEvent.clientX - state.startX;
+        const next = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, state.startWidth + delta));
+        setSidebarWidth(next);
+      };
+      const onUp = () => {
+        resizeState.current = null;
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        document.body.style.removeProperty('cursor');
+        document.body.style.removeProperty('user-select');
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    },
+    [compact, sidebarWidth],
+  );
+
+  const resetSidebarWidth = useCallback(() => {
+    setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+    if (typeof window !== 'undefined') window.localStorage.removeItem(SIDEBAR_WIDTH_STORAGE_KEY);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -173,6 +215,12 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     const savedTheme = window.localStorage.getItem('hermes-theme') === 'light' ? 'light' : 'dark';
     setTheme(savedTheme);
     document.documentElement.dataset.theme = savedTheme;
+    const savedWidth = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    if (!Number.isNaN(savedWidth) && savedWidth >= SIDEBAR_MIN_WIDTH && savedWidth <= SIDEBAR_MAX_WIDTH) {
+      setSidebarWidth(savedWidth);
+    }
+    const savedShowNewChat = window.localStorage.getItem('hermes-sidebar-show-new-chat');
+    if (savedShowNewChat === 'false') setShowNewChat(false);
   }, []);
 
   useEffect(() => {
@@ -183,6 +231,16 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     window.localStorage.setItem('hermes-sidebar-mode', mode);
   }, [mode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!compact) window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
+  }, [sidebarWidth, compact]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('hermes-sidebar-show-new-chat', String(showNewChat));
+  }, [showNewChat]);
 
   useEffect(() => {
     let cancelled = false;
@@ -426,6 +484,7 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
   }
 
   const showFullConversationList = isChatPage;
+  const sidebarStyle = compact ? undefined : { width: `${sidebarWidth}px`, flexBasis: `${sidebarWidth}px` };
 
   return (
     <div className={`workspace-shell sidebar-mode-${mode}`}>
@@ -434,7 +493,10 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
       </button>
 
       {mobileOpen && <button className="mobile-backdrop" aria-label="Fermer le menu" onClick={() => setMobileOpen(false)} />}
-      <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
+      <aside
+        className={`sidebar ${mobileOpen ? 'sidebar-open' : ''} ${showNewChat ? '' : 'new-chat-hidden'}`}
+        style={sidebarStyle as React.CSSProperties}
+      >
         <div className="brand-row">
           <Link href="/" className="brand" onClick={() => setMobileOpen(false)} title="Hermes Workspace" aria-label="Hermes Workspace">
             <span className="brand-mark"><Sparkles size={17} /></span>
@@ -444,134 +506,146 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
               </span>
             )}
           </Link>
-          <button
-            className="icon-button sidebar-toggle"
-            onClick={toggleMode}
-            aria-label={compact ? 'Déployer la barre latérale' : 'Rétracter la barre latérale'}
-            title={compact ? 'Déployer la barre latérale' : 'Rétracter la barre latérale'}
-            onMouseEnter={(event) => showTooltip(compact ? 'Déployer' : 'Rétracter', event)}
-            onMouseLeave={hideTooltip}
-            onFocus={(event) => showTooltip(compact ? 'Déployer' : 'Rétracter', event)}
-            onBlur={hideTooltip}
-          >
-            {compact ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-          </button>
-          <button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="Fermer le menu">
-            <X size={18} />
-          </button>
-        </div>
-
-        {!compact && (
-          <Link
-            href="/chat"
-            className="new-chat"
-            onClick={startNewConversation}
-            title="Nouvelle conversation"
-            onMouseEnter={(event) => showTooltip('Nouvelle conversation (⌘K)', event)}
-            onMouseLeave={hideTooltip}
-            onFocus={(event) => showTooltip('Nouvelle conversation (⌘K)', event)}
-            onBlur={hideTooltip}
-          >
-            <Plus size={17} />
-            <span className="sidebar-label">Nouvelle conversation</span>
-            <span className="shortcut sidebar-label">⌘ K</span>
-          </Link>
-        )}
-
-        {compact && (
-          <Link
-            href="/chat"
-            className="new-chat compact-new-chat"
-            onClick={startNewConversation}
-            title="Nouvelle conversation"
-            aria-label="Nouvelle conversation"
-          >
-            <Plus size={18} />
-          </Link>
-        )}
-
-        {!compact && <div className="sidebar-section-label sidebar-label">Workspace</div>}
-        <nav className="sidebar-nav" aria-label="Navigation principale">
-          {navigation.map(({ href, label, icon: Icon }) => {
-            const active = pathname === href || (href === '/chat' && Boolean(pathname?.startsWith('/chat')));
-            const badgeValue = href === '/chat' ? totalConversations : href === '/agents' ? agents.length : '';
-            return (
-              <Link
-                key={href}
-                href={href}
-                onClick={() => setMobileOpen(false)}
-                className={active ? 'nav-link active' : 'nav-link'}
-                onMouseEnter={(event) => showTooltip(label, event)}
+          <div className="brand-actions">
+            {!compact && (
+              <button
+                className="icon-button"
+                onClick={() => setShowNewChat((value) => !value)}
+                aria-label={showNewChat ? 'Masquer le bouton Nouvelle conversation' : 'Afficher le bouton Nouvelle conversation'}
+                aria-pressed={showNewChat}
+                title={showNewChat ? 'Masquer le bouton' : 'Afficher le bouton'}
+                onMouseEnter={(event) => showTooltip(showNewChat ? 'Cacher la barre Nouvelle conversation' : 'Afficher la barre Nouvelle conversation', event)}
                 onMouseLeave={hideTooltip}
-                onFocus={(event) => showTooltip(label, event)}
+                onFocus={(event) => showTooltip(showNewChat ? 'Cacher la barre Nouvelle conversation' : 'Afficher la barre Nouvelle conversation', event)}
                 onBlur={hideTooltip}
               >
-                <Icon size={17} strokeWidth={1.8} />
-                {!compact && <span className="sidebar-label">{label}</span>}
-                {!compact && href === '/chat' && <span className="nav-badge">{totalConversations || ''}</span>}
-                {compact && href === '/chat' && <span className="nav-badge-compact">{totalConversations || ''}</span>}
-              </Link>
-            );
-          })}
-        </nav>
+                {showNewChat ? <X size={15} /> : <Plus size={15} />}
+              </button>
+            )}
+            <button
+              className="icon-button sidebar-toggle"
+              onClick={toggleMode}
+              aria-label={compact ? 'Déployer la barre latérale' : 'Rétracter la barre latérale'}
+              title={compact ? 'Déployer la barre latérale' : 'Rétracter la barre latérale'}
+              onMouseEnter={(event) => showTooltip(compact ? 'Déployer' : 'Rétracter', event)}
+              onMouseLeave={hideTooltip}
+              onFocus={(event) => showTooltip(compact ? 'Déployer' : 'Rétracter', event)}
+              onBlur={hideTooltip}
+            >
+              {compact ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            </button>
+            <button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="Fermer le menu">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
 
-        {!compact && (
-          <div className="sidebar-section-label history-label sidebar-label">
+        {/* CONVERSATIONS EN HAUT — c'est la zone principale de la sidebar. */}
+        <div className="sidebar-conversations-top">
+          <div className="sidebar-section-label conversations-header sidebar-label">
             <span>{showFullConversationList ? 'Conversations' : 'Récents'}</span>
-            {showFullConversationList && (
+            {!compact && showFullConversationList && (
               <span className="sidebar-section-count">
                 {totalGroups} agent{totalGroups > 1 ? 's' : ''} · {filteredConversations.length} conv.
               </span>
             )}
           </div>
-        )}
 
-        {!compact && showFullConversationList && (
-          <div className="sidebar-conversations">
-            <div className="sidebar-search-row">
-              <div className="sidebar-search">
-                <Search size={14} />
-                <input value={query} onChange={onSearchChange} placeholder="Rechercher…" aria-label="Rechercher une conversation" />
-                {query && (
-                  <button className="search-clear" onClick={() => setQuery('')} aria-label="Effacer la recherche" type="button">
-                    <X size={12} />
-                  </button>
-                )}
+          {!compact && showNewChat && (
+            <Link
+              href="/chat"
+              className="new-chat"
+              onClick={startNewConversation}
+              aria-label="Nouvelle conversation"
+              onMouseEnter={(event) => showTooltip('Nouvelle conversation (⌘K)', event)}
+              onMouseLeave={hideTooltip}
+              onFocus={(event) => showTooltip('Nouvelle conversation (⌘K)', event)}
+              onBlur={hideTooltip}
+            >
+              <Plus size={17} />
+              <span className="sidebar-label">Nouvelle conversation</span>
+              <span className="shortcut sidebar-label">⌘ K</span>
+            </Link>
+          )}
+
+          {!compact && !showNewChat && (
+            <button
+              type="button"
+              className="new-chat new-chat-compact"
+              onClick={() => setShowNewChat(true)}
+              aria-label="Afficher le bouton Nouvelle conversation"
+              title="Afficher la barre Nouvelle conversation"
+              onMouseEnter={(event) => showTooltip('Afficher la barre Nouvelle conversation', event)}
+              onMouseLeave={hideTooltip}
+              onFocus={(event) => showTooltip('Afficher la barre Nouvelle conversation', event)}
+              onBlur={hideTooltip}
+            >
+              <Plus size={17} />
+              <span className="sr-only">Afficher la barre Nouvelle conversation</span>
+            </button>
+          )}
+
+          {compact && (
+            <Link
+              href="/chat"
+              className="new-chat compact-new-chat"
+              onClick={startNewConversation}
+              aria-label="Nouvelle conversation"
+              title="Nouvelle conversation"
+            >
+              <Plus size={18} />
+            </Link>
+          )}
+
+          {!compact && showFullConversationList && (
+            <>
+              <div className="sidebar-search-row">
+                <div className="sidebar-search">
+                  <Search size={14} />
+                  <input value={query} onChange={onSearchChange} placeholder="Rechercher…" aria-label="Rechercher une conversation" />
+                  {query && (
+                    <button className="search-clear" onClick={() => setQuery('')} aria-label="Effacer la recherche" type="button">
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+                <label className="sidebar-agent-filter">
+                  <span className="sr-only">Filtrer par agent</span>
+                  <select value={agentFilter} onChange={onAgentFilterChange}>
+                    <option value="all">Tous ({totalConversations})</option>
+                    {Array.from(
+                      new Set([
+                        ...agents.map((agent) => agent.name),
+                        ...filteredConversations
+                          .map((conversation) => conversation.agent_name || '')
+                          .filter((value) => !agents.some((agent) => agent.name === value)),
+                      ]),
+                    )
+                      .filter(Boolean)
+                      .map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    <option value="">Hermes Core</option>
+                  </select>
+                  <ChevronDown size={12} />
+                </label>
               </div>
-              <label className="sidebar-agent-filter">
-                <span className="sr-only">Filtrer par agent</span>
-                <select value={agentFilter} onChange={onAgentFilterChange}>
-                  <option value="all">Tous ({totalConversations})</option>
-                  {Array.from(
-                    new Set([
-                      ...agents.map((agent) => agent.name),
-                      ...filteredConversations
-                        .map((conversation) => conversation.agent_name || '')
-                        .filter((value) => !agents.some((agent) => agent.name === value)),
-                    ]),
-                  )
-                    .filter(Boolean)
-                    .map((name) => (
-                      <option key={name} value={name}>
-                        {name}
-                      </option>
-                    ))}
-                  <option value="">Hermes Core</option>
-                </select>
-                <ChevronDown size={12} />
-              </label>
+            </>
+          )}
+
+          {!compact && showFullConversationList && groupedConversations.length === 0 && (
+            <div className="history-empty">
+              {conversations.length === 0
+                ? 'Aucune conversation. Lancez-en une avec « Nouvelle conversation ».'
+                : 'Aucun résultat pour cette recherche.'}
             </div>
+          )}
 
-            {groupedConversations.length === 0 && (
-              <div className="history-empty">
-                {conversations.length === 0
-                  ? 'Aucune conversation. Lancez-en une avec « Nouvelle conversation ».'
-                  : 'Aucun résultat pour cette recherche.'}
-              </div>
-            )}
-
-            <div className="sidebar-conversation-scroll">
-              {groupedConversations.map((group) => {
+          <div className={`sidebar-conversation-scroll ${showFullConversationList ? 'full' : 'compact'}`}>
+            {!compact && showFullConversationList &&
+              groupedConversations.map((group) => {
                 const isCollapsed = collapsedGroups[group.key] === true;
                 return (
                   <section key={group.key} className={`agent-group ${isCollapsed ? 'collapsed' : ''}`}>
@@ -626,37 +700,61 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
                   </section>
                 );
               })}
-            </div>
-          </div>
-        )}
 
-        {!compact && !showFullConversationList && (
-          <div className="sidebar-conversations">
-            <div className="sidebar-conversation-scroll compact-list">
-              {compactRecent.length === 0 && (
+            {!compact && !showFullConversationList &&
+              (compactRecent.length === 0 ? (
                 <div className="history-empty">
                   {conversations.length === 0
                     ? 'Aucune conversation.'
                     : 'Aucun résultat pour cette recherche.'}
                 </div>
-              )}
-              {compactRecent.map((conversation) => (
-                <CompactConversationRow
-                  key={conversation.id}
-                  conversation={conversation}
-                  active={conversation.id === activeConversationId}
-                  onOpen={openConversation}
-                />
+              ) : (
+                <>
+                  {compactRecent.map((conversation) => (
+                    <CompactConversationRow
+                      key={conversation.id}
+                      conversation={conversation}
+                      active={conversation.id === activeConversationId}
+                      onOpen={openConversation}
+                    />
+                  ))}
+                  {conversations.length > compactRecent.length && (
+                    <Link href="/chat" className="sidebar-show-all" onClick={() => setMobileOpen(false)}>
+                      Voir toutes les conversations ({conversations.length})
+                      <ChevronRight size={13} />
+                    </Link>
+                  )}
+                </>
               ))}
-              {conversations.length > compactRecent.length && (
-                <Link href="/chat" className="sidebar-show-all" onClick={() => setMobileOpen(false)}>
-                  Voir toutes les conversations ({conversations.length})
-                  <ChevronRight size={13} />
-                </Link>
-              )}
-            </div>
           </div>
-        )}
+        </div>
+
+        {/* NAVIGATION — sous les conversations. */}
+        {!compact && <div className="sidebar-section-label nav-header sidebar-label">Workspace</div>}
+        <nav className="sidebar-nav" aria-label="Navigation principale">
+          {navigation.map(({ href, label, icon: Icon }) => {
+            const active = pathname === href || (href === '/chat' && Boolean(pathname?.startsWith('/chat')));
+            return (
+              <Link
+                key={href}
+                href={href}
+                onClick={() => setMobileOpen(false)}
+                className={active ? 'nav-link active' : 'nav-link'}
+                onMouseEnter={(event) => showTooltip(label, event)}
+                onMouseLeave={hideTooltip}
+                onFocus={(event) => showTooltip(label, event)}
+                onBlur={hideTooltip}
+              >
+                <Icon size={17} strokeWidth={1.8} />
+                {!compact && <span className="sidebar-label">{label}</span>}
+                {!compact && href === '/chat' && <span className="nav-badge">{totalConversations || ''}</span>}
+                {compact && href === '/chat' && <span className="nav-badge-compact">{totalConversations || ''}</span>}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Bouton "Nouvelle conversation" réduit, près de la nav. */}
 
         <div className="sidebar-footer">
           {!compact && (
@@ -706,6 +804,23 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
             {!compact && <Boxes size={15} className="muted-icon sidebar-label" />}
           </div>
         </div>
+
+        {!compact && (
+          <div
+            className="sidebar-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Redimensionner la barre latérale"
+            aria-valuenow={sidebarWidth}
+            aria-valuemin={SIDEBAR_MIN_WIDTH}
+            aria-valuemax={SIDEBAR_MAX_WIDTH}
+            title="Glisser pour redimensionner · Double-clic pour réinitialiser"
+            onMouseDown={beginResize}
+            onDoubleClick={resetSidebarWidth}
+          >
+            <span className="sidebar-resize-grip" aria-hidden="true" />
+          </div>
+        )}
       </aside>
 
       <main className="workspace-main">{children}</main>
