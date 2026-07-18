@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Command,
   Home,
+  LayoutGrid,
   LogOut,
   MessageSquare,
   Moon,
@@ -168,6 +169,7 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
   const tooltipTimer = useRef<number | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState<number>(SIDEBAR_DEFAULT_WIDTH);
   const [showNewChat, setShowNewChat] = useState<boolean>(true);
+  const [showWorkspace, setShowWorkspace] = useState<boolean>(true);
   const resizeState = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const isLogin = pathname === '/login';
@@ -221,6 +223,8 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     }
     const savedShowNewChat = window.localStorage.getItem('hermes-sidebar-show-new-chat');
     if (savedShowNewChat === 'false') setShowNewChat(false);
+    const savedShowWorkspace = window.localStorage.getItem('hermes-sidebar-show-workspace');
+    if (savedShowWorkspace === 'false') setShowWorkspace(false);
   }, []);
 
   useEffect(() => {
@@ -241,6 +245,11 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem('hermes-sidebar-show-new-chat', String(showNewChat));
   }, [showNewChat]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('hermes-sidebar-show-workspace', String(showWorkspace));
+  }, [showWorkspace]);
 
   useEffect(() => {
     let cancelled = false;
@@ -494,7 +503,7 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
 
       {mobileOpen && <button className="mobile-backdrop" aria-label="Fermer le menu" onClick={() => setMobileOpen(false)} />}
       <aside
-        className={`sidebar ${mobileOpen ? 'sidebar-open' : ''} ${showNewChat ? '' : 'new-chat-hidden'}`}
+        className={`sidebar ${mobileOpen ? 'sidebar-open' : ''} ${showNewChat ? '' : 'new-chat-hidden'} ${showWorkspace ? '' : 'workspace-hidden'}`}
         style={sidebarStyle as React.CSSProperties}
       >
         <div className="brand-row">
@@ -520,6 +529,21 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
                 onBlur={hideTooltip}
               >
                 {showNewChat ? <X size={15} /> : <Plus size={15} />}
+              </button>
+            )}
+            {!compact && (
+              <button
+                className="icon-button"
+                onClick={() => setShowWorkspace((value) => !value)}
+                aria-label={showWorkspace ? 'Masquer la navigation Workspace' : 'Afficher la navigation Workspace'}
+                aria-pressed={showWorkspace}
+                title={showWorkspace ? 'Cacher le menu Workspace' : 'Afficher le menu Workspace'}
+                onMouseEnter={(event) => showTooltip(showWorkspace ? 'Cacher le menu Workspace' : 'Afficher le menu Workspace', event)}
+                onMouseLeave={hideTooltip}
+                onFocus={(event) => showTooltip(showWorkspace ? 'Cacher le menu Workspace' : 'Afficher le menu Workspace', event)}
+                onBlur={hideTooltip}
+              >
+                {showWorkspace ? <LayoutGrid size={15} /> : <LayoutGrid size={15} />}
               </button>
             )}
             <button
@@ -729,30 +753,51 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        {/* NAVIGATION — sous les conversations. */}
-        {!compact && <div className="sidebar-section-label nav-header sidebar-label">Workspace</div>}
-        <nav className="sidebar-nav" aria-label="Navigation principale">
-          {navigation.map(({ href, label, icon: Icon }) => {
-            const active = pathname === href || (href === '/chat' && Boolean(pathname?.startsWith('/chat')));
-            return (
-              <Link
-                key={href}
-                href={href}
-                onClick={() => setMobileOpen(false)}
-                className={active ? 'nav-link active' : 'nav-link'}
-                onMouseEnter={(event) => showTooltip(label, event)}
-                onMouseLeave={hideTooltip}
-                onFocus={(event) => showTooltip(label, event)}
-                onBlur={hideTooltip}
-              >
-                <Icon size={17} strokeWidth={1.8} />
-                {!compact && <span className="sidebar-label">{label}</span>}
-                {!compact && href === '/chat' && <span className="nav-badge">{totalConversations || ''}</span>}
-                {compact && href === '/chat' && <span className="nav-badge-compact">{totalConversations || ''}</span>}
-              </Link>
-            );
-          })}
-        </nav>
+        {/* NAVIGATION — sous les conversations. Cachable via le toggle Workspace. */}
+        {showWorkspace && !compact && (
+          <>
+            <div className="sidebar-section-label nav-header sidebar-label">Workspace</div>
+            <nav className="sidebar-nav" aria-label="Navigation principale">
+              {navigation.map(({ href, label, icon: Icon }) => {
+                const active = pathname === href || (href === '/chat' && Boolean(pathname?.startsWith('/chat')));
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    onClick={() => setMobileOpen(false)}
+                    className={active ? 'nav-link active' : 'nav-link'}
+                    onMouseEnter={(event) => showTooltip(label, event)}
+                    onMouseLeave={hideTooltip}
+                    onFocus={(event) => showTooltip(label, event)}
+                    onBlur={hideTooltip}
+                  >
+                    <Icon size={17} strokeWidth={1.8} />
+                    {!compact && <span className="sidebar-label">{label}</span>}
+                    {!compact && href === '/chat' && <span className="nav-badge">{totalConversations || ''}</span>}
+                    {compact && href === '/chat' && <span className="nav-badge-compact">{totalConversations || ''}</span>}
+                  </Link>
+                );
+              })}
+            </nav>
+          </>
+        )}
+
+        {!showWorkspace && !compact && (
+          <button
+            type="button"
+            className="workspace-restore"
+            onClick={() => setShowWorkspace(true)}
+            aria-label="Afficher le menu Workspace"
+            title="Afficher le menu Workspace"
+            onMouseEnter={(event) => showTooltip('Afficher le menu Workspace', event)}
+            onMouseLeave={hideTooltip}
+            onFocus={(event) => showTooltip('Afficher le menu Workspace', event)}
+            onBlur={hideTooltip}
+          >
+            <LayoutGrid size={14} />
+            <span>Workspace</span>
+          </button>
+        )}
 
         {/* Bouton "Nouvelle conversation" réduit, près de la nav. */}
 
@@ -884,11 +929,18 @@ function ConversationCard(props: ConversationCardProps) {
   const contextValue = contextLabel(conversation.context_tokens);
   const updatedRelative = formatRelativeDate(conversation.updated_at);
   const toolCount = conversation.tool_names?.length || 0;
+  const [expanded, setExpanded] = useState(false);
 
-  const cardClasses = `conversation-card ${active ? 'is-active' : ''} ${busy ? 'is-busy' : ''}`;
+  const cardClasses = `conversation-card ${active ? 'is-active' : ''} ${busy ? 'is-busy' : ''} ${expanded ? 'is-expanded' : 'is-collapsed'}`;
+
+  function toggleExpanded(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    event.preventDefault();
+    setExpanded((value) => !value);
+  }
 
   return (
-    <article className={cardClasses} data-active={active}>
+    <article className={cardClasses} data-active={active} data-expanded={expanded}>
       <button
         type="button"
         className="conversation-card-main"
@@ -923,29 +975,46 @@ function ConversationCard(props: ConversationCardProps) {
           <span className="conversation-card-meta">
             <span className="meta-agent">{agentName}</span>
             <span className="meta-dot" aria-hidden="true">·</span>
-            <span className="meta-model">{modelLabel}</span>
-            {contextValue && (
-              <>
-                <span className="meta-dot" aria-hidden="true">·</span>
-                <span className="meta-context">{contextValue}</span>
-              </>
-            )}
-          </span>
-          {preview ? (
-            <span className="conversation-card-preview">{truncate(preview, 110)}</span>
-          ) : (
-            <span className="conversation-card-preview placeholder">Aucun message pour l’instant</span>
-          )}
-          <span className="conversation-card-footer">
             <span className="meta-relative">{updatedRelative}</span>
-            {toolCount > 0 && (
-              <span className="meta-tools" aria-label={`${toolCount} outil${toolCount > 1 ? 's' : ''}`}>
-                {toolCount} outil{toolCount > 1 ? 's' : ''}
-              </span>
-            )}
-            {active && <span className="meta-active">Active</span>}
           </span>
+          <div className="conversation-card-details">
+            {preview ? (
+              <span className="conversation-card-preview">{truncate(preview, 110)}</span>
+            ) : (
+              <span className="conversation-card-preview placeholder">Aucun message pour l’instant</span>
+            )}
+            <span className="conversation-card-footer">
+              <span className="meta-model">{modelLabel}</span>
+              {contextValue && (
+                <>
+                  <span className="meta-dot" aria-hidden="true">·</span>
+                  <span className="meta-context">{contextValue}</span>
+                </>
+              )}
+              {toolCount > 0 && (
+                <>
+                  <span className="meta-dot" aria-hidden="true">·</span>
+                  <span className="meta-tools" aria-label={`${toolCount} outil${toolCount > 1 ? 's' : ''}`}>
+                    {toolCount} outil{toolCount > 1 ? 's' : ''}
+                  </span>
+                </>
+              )}
+              {active && <span className="meta-active">Active</span>}
+            </span>
+          </div>
         </span>
+      </button>
+      <button
+        type="button"
+        className="conversation-expand-button"
+        aria-label={expanded ? 'Réduire les détails' : 'Voir les détails'}
+        aria-expanded={expanded}
+        title={expanded ? 'Réduire' : 'Détails'}
+        onClick={toggleExpanded}
+        onMouseEnter={(event) => onShowTooltip(expanded ? 'Réduire' : 'Détails', event)}
+        onMouseLeave={onHideTooltip}
+      >
+        <ChevronDown size={14} className="conversation-expand-icon" />
       </button>
       <button
         type="button"

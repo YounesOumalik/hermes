@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowUp, Bot, Check, ChevronDown, Copy, Paperclip, Plus, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Square, Terminal, UserRound, WandSparkles, X } from 'lucide-react';
+import { ArrowUp, Bot, Check, ChevronDown, Copy, Paperclip, Plus, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Square, Terminal, UserRound, WandSparkles, Wrench, X } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { Agent, Attachment, Conversation, ConversationMessage, Tool, api } from '../lib/api';
@@ -64,6 +64,9 @@ export default function ChatPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSnapshot, setSettingsSnapshot] = useState<ConversationSettingsSnapshot | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [showContextPanel, setShowContextPanel] = useState<boolean>(true);
+  const [showToolsSection, setShowToolsSection] = useState<boolean>(true);
+  const [showInstructionsSection, setShowInstructionsSection] = useState<boolean>(true);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -75,6 +78,28 @@ export default function ChatPage() {
   const providerLabel = providerStatus?.minimax_configured ? 'MiniMax connecté' : 'MiniMax à configurer';
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.localStorage.getItem('hermes-context-panel-hidden') === 'true') setShowContextPanel(false);
+    if (window.localStorage.getItem('hermes-context-tools-hidden') === 'true') setShowToolsSection(false);
+    if (window.localStorage.getItem('hermes-context-instructions-hidden') === 'true') setShowInstructionsSection(false);
+  }, []);
+
+useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('hermes-context-panel-hidden', String(!showContextPanel));
+  }, [showContextPanel]);
+
+useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('hermes-context-tools-hidden', String(!showToolsSection));
+  }, [showToolsSection]);
+
+useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('hermes-context-instructions-hidden', String(!showInstructionsSection));
+  }, [showInstructionsSection]);
+
+useEffect(() => {
     let cancelled = false;
     async function initialise() {
       const params = new URLSearchParams(window.location.search);
@@ -308,7 +333,76 @@ export default function ChatPage() {
         <div className="message-list">{initialising && <div className="loading-state">Chargement de la conversation…</div>}{messages.map((message, index) => <Message key={`${message.time}-${index}`} message={message} index={index} onCopy={copyMessage} onRegenerate={regenerate} copied={copied === index} />)}{loading && <div className="message assistant-message"><span className="message-avatar hermes-avatar"><Sparkles size={15} /></span><div className="message-content"><div className="message-meta"><strong>{activeName}</strong><span>réfléchit</span></div><div className="thinking"><span /><span /><span /></div></div></div>}</div>
         <div className="composer-wrap"><div className="suggestion-row"><button onClick={() => setInput('Analyse l’état de mon installation Hermes')}><WandSparkles size={14} /> Analyser mon installation</button><button onClick={() => setInput('Crée un agent spécialisé pour mon projet')}><Bot size={14} /> Créer un agent</button></div><form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input ref={fileInputRef} className="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,.xml,.html,.css,.js,.ts,.py,.sql,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); }} /><div className="attachment-strip">{pendingAttachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /><span>{attachment.name}</span><button type="button" onClick={() => removePendingAttachment(attachment.id)} aria-label={`Supprimer ${attachment.name}`}><X size={13} /></button></span>)}{uploading && <span className="attachment-uploading">Téléversement…</span>}{uploadError && <span className="attachment-error">{uploadError}</span>}</div><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={`Écrivez une instruction à ${activeName}…`} rows={2} aria-label="Message à Hermes" /><div className="composer-toolbar"><button type="button" className="icon-button" aria-label="Joindre un fichier" title="Joindre un fichier ou déposer ici" onClick={() => fileInputRef.current?.click()} disabled={uploading}><Paperclip size={17} /></button><span className="composer-hint">Déposez un fichier ici · Entrée pour envoyer · ⇧ Entrée pour une nouvelle ligne</span><button className={`send-button ${canSend ? 'ready' : ''}`} type={loading ? 'button' : 'submit'} onClick={loading ? stopGeneration : undefined} disabled={!canSend && !loading} aria-label={loading ? 'Arrêter' : 'Envoyer'}>{loading ? <Square size={15} fill="currentColor" /> : <ArrowUp size={17} />}</button></div></form><p className="composer-disclaimer">Hermes peut faire des erreurs. Vérifiez les actions importantes.</p></div>
       </section>
-      <aside className="context-panel"><div className="context-heading"><div><div className="eyebrow">CONTEXTE</div><h3>{conversationTitle}</h3></div><button className="icon-button" onClick={openConversationSettings} aria-label="Paramètres de la conversation"><SlidersHorizontal size={16} /></button></div><div className="context-agent"><span className="large-agent-avatar"><Sparkles size={20} /></span><div><strong>{activeName}</strong><small>{activeModel} · {contextLabel(contextTokens)}</small></div><Check size={16} className="text-success" /></div><div className="context-section"><div className="context-section-title"><span>Outils actifs</span><span className="count-badge">{selectedTools.length}</span></div>{selectedTools.map((tool, index) => <ContextTool icon={[Terminal, GitHubMark, WandSparkles][index % 3]} name={tool} status="Prêt" key={tool} />)}</div><div className="context-section"><div className="context-section-title"><span>Instructions</span><a className="text-link" href="/agents">Modifier</a></div><p className="context-note">{activePrompt}</p></div><div className="context-footer"><span className="status-dot online" /> Conversation synchronisée</div></aside>
+      <aside className={`context-panel ${showContextPanel ? '' : 'is-hidden'}`}>
+        {showContextPanel ? (
+          <>
+            <div className="context-heading">
+              <div>
+                <div className="eyebrow">CONTEXTE</div>
+                <h3>{conversationTitle}</h3>
+              </div>
+              <div className="context-heading-actions">
+                <button className="icon-button" onClick={openConversationSettings} aria-label="Paramètres de la conversation" title="Paramètres de la conversation"><SlidersHorizontal size={16} /></button>
+                <button className="icon-button" onClick={() => setShowContextPanel(false)} aria-label="Masquer le panneau de contexte" title="Masquer le panneau de contexte"><X size={15} /></button>
+              </div>
+            </div>
+            <div className="context-agent">
+              <span className="large-agent-avatar"><Sparkles size={20} /></span>
+              <div>
+                <strong>{activeName}</strong>
+                <small>{activeModel} · {contextLabel(contextTokens)}</small>
+              </div>
+              <Check size={16} className="text-success" />
+            </div>
+            {showToolsSection && (
+              <div className="context-section">
+                <div className="context-section-title">
+                  <span>Outils actifs</span>
+                  <div className="context-section-actions">
+                    <span className="count-badge">{selectedTools.length}</span>
+                    <button className="context-section-toggle" onClick={() => setShowToolsSection(false)} aria-label="Masquer la liste des outils" title="Masquer les outils"><X size={11} /></button>
+                  </div>
+                </div>
+                {selectedTools.map((tool, index) => <ContextTool icon={[Terminal, GitHubMark, WandSparkles][index % 3]} name={tool} status="Prêt" key={tool} />)}
+              </div>
+            )}
+            {!showToolsSection && (
+              <button type="button" className="context-restore" onClick={() => setShowToolsSection(true)}>
+                <Wrench size={12} /> Voir les outils ({selectedTools.length})
+              </button>
+            )}
+            {showInstructionsSection && (
+              <div className="context-section">
+                <div className="context-section-title">
+                  <span>Instructions</span>
+                  <div className="context-section-actions">
+                    <a className="text-link" href="/agents">Modifier</a>
+                    <button className="context-section-toggle" onClick={() => setShowInstructionsSection(false)} aria-label="Masquer les instructions" title="Masquer les instructions"><X size={11} /></button>
+                  </div>
+                </div>
+                <p className="context-note">{activePrompt}</p>
+              </div>
+            )}
+            {!showInstructionsSection && (
+              <button type="button" className="context-restore" onClick={() => setShowInstructionsSection(true)}>
+                <Sparkles size={12} /> Voir les instructions
+              </button>
+            )}
+            <div className="context-footer"><span className="status-dot online" /> Conversation synchronisée</div>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="context-panel-reveal"
+            onClick={() => setShowContextPanel(true)}
+            aria-label="Afficher le panneau de contexte"
+            title="Afficher le panneau de contexte"
+          >
+            <span className="context-panel-reveal-mark"><Sparkles size={15} /></span>
+            <span className="context-panel-reveal-label">Contexte</span>
+          </button>
+        )}
+      </aside>
     </div>
     {settingsOpen && <div className="modal-backdrop" onClick={cancelConversationSettings}><div className="modal modal-wide conversation-settings" onClick={(event) => event.stopPropagation()}><div className="modal-heading"><div><div className="eyebrow">PARAMÈTRES DE LA CONVERSATION</div><h2>Contrôler le contexte</h2></div><button className="icon-button" onClick={cancelConversationSettings} aria-label="Fermer"><X size={18} /></button></div><div className="conversation-config-grid"><label>Modèle MiniMax<input list="minimax-model-options" value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} placeholder={activeAgent?.model || providerStatus?.model || 'MiniMax-M3'} /><small>Vide = modèle de l’agent, puis modèle global.</small><datalist id="minimax-model-options">{modelOptions.map((model) => <option value={model} key={model} />)}</datalist></label><label>Fenêtre de contexte<select value={contextTokens} onChange={(event) => setContextTokens(Number(event.target.value))}>{contextOptions.map((option) => <option value={option.value} key={option.value}>{option.label} tokens</option>)}</select><small>1M est disponible selon votre accès MiniMax M3.</small></label></div><div className="conversation-tools"><div className="tool-picker-heading"><div><strong>Outils de cette conversation</strong><small>Ces outils seront indiqués à Hermes pour cette session uniquement.</small></div><span className="count-badge">{selectedTools.length}</span></div><div className="tool-picker-grid">{tools.map((tool) => <label className={`tool-option ${selectedTools.includes(tool.name) ? 'selected' : ''}`} key={tool.name}><input type="checkbox" checked={selectedTools.includes(tool.name)} onChange={() => toggleTool(tool.name)} /><span><strong>{tool.name}</strong><small>{tool.description}</small></span></label>)}</div></div><div className="modal-actions"><button className="button button-secondary" onClick={cancelConversationSettings}>Annuler</button><button className="button button-primary" onClick={() => void saveConversationSettings()} disabled={savingSettings}>{savingSettings ? 'Enregistrement…' : <><Save size={15} /> Enregistrer</>}</button></div></div></div>}
   </div>;
