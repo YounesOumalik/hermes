@@ -24,8 +24,24 @@ async function forward(request: NextRequest, path: string[]) {
       cache: 'no-store',
       redirect: 'manual',
     });
+
+    const contentType = response.headers.get('content-type') || '';
+
+    // SSE pass-through : ne PAS bufferiser, juste streamer le body.
+    if (contentType.includes('text/event-stream') && response.body) {
+      return new NextResponse(response.body, {
+        status: response.status,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
+      });
+    }
+
+    // Comportement standard (JSON ou autre) : buffer puis renvoyer.
     const responseBody = await response.text();
-    const responseHeaders = new Headers({ 'Content-Type': response.headers.get('content-type') || 'application/json' });
+    const responseHeaders = new Headers({ 'Content-Type': contentType || 'application/json' });
     const location = response.headers.get('location');
     if (location) responseHeaders.set('Location', location);
     return new NextResponse(responseBody, {

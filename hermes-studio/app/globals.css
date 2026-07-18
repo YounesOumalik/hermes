@@ -1455,3 +1455,74 @@ h3 { font-size: 1.08rem; font-weight: 700; }
 
 /* Skeleton dans les loading states */
 .loading-state { display: grid; gap: 8px; padding: 16px; }
+
+/* ============================================================================
+   Phase 3 — Streaming cursor, tool call cards, reasoning block.
+   ============================================================================ */
+
+/* Curseur clignotant pendant le streaming token-par-token */
+.streaming-cursor {
+  display: inline-block; width: 8px; height: 1em;
+  margin-left: 2px; vertical-align: text-bottom;
+  background: var(--accent); border-radius: 2px;
+  animation: cursor-blink .8s infinite;
+}
+@keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* Tool call card (inline dans la conversation, pendant le streaming) */
+.tool-call-card {
+  margin: 8px 0; border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: rgba(255,255,255,.03); overflow: hidden;
+  transition: border-color .15s ease;
+}
+.tool-call-card.is-running { border-color: rgba(157,140,255,.35); animation: pulse-border 2s infinite; }
+@keyframes pulse-border { 0%, 100% { border-color: rgba(157,140,255,.35); } 50% { border-color: rgba(157,140,255,.55); } }
+.tool-call-header {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  font-size: var(--text-xs);
+}
+.tool-call-icon { display: grid; place-items: center; width: 22px; height: 22px; border-radius: var(--radius-sm); color: var(--accent-2); background: rgba(89,228,212,.1); }
+.tool-call-name { font-weight: var(--weight-bold); color: var(--text); font-size: var(--text-sm); }
+.tool-call-status { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: var(--text-xs); }
+.tool-call-status-running { color: var(--accent); }
+.tool-call-status-success { color: var(--success); }
+.tool-call-status-error { color: var(--danger); }
+.tool-call-toggle {
+  display: grid; place-items: center; width: 22px; height: 22px;
+  color: var(--dim); background: transparent; border: 0; cursor: pointer;
+  border-radius: var(--radius-sm); transition: color .15s, background .15s;
+}
+.tool-call-toggle:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.tool-call-toggle-icon { transition: transform .2s ease; }
+.tool-call-toggle-icon.is-open { transform: rotate(-180deg); }
+.tool-call-body { padding: 8px 12px 12px; border-top: 1px solid var(--line); }
+.tool-call-section { margin-bottom: 8px; }
+.tool-call-label { display: block; margin-bottom: 4px; color: var(--dim); font: var(--text-xs) var(--font-mono); text-transform: uppercase; letter-spacing: .06em; }
+.tool-call-pre {
+  margin: 0; padding: 10px; border-radius: var(--radius-sm);
+  background: rgba(6,10,18,.6); color: var(--muted);
+  font: 11px var(--font-mono); line-height: 1.55; overflow-x: auto;
+  max-height: 260px; overflow-y: auto;
+}
+:root[data-theme="light"] .tool-call-pre { background: rgba(240,243,250,.8); color: #3c4a61; }
+
+/* Reasoning block (collapsible "💭 Raisonnement") */
+.reasoning-block { margin: 8px 0; }
+.reasoning-toggle {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  color: var(--muted); background: transparent; font-size: var(--text-xs); cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.reasoning-toggle:hover { border-color: rgba(157,140,255,.3); background: rgba(157,140,255,.04); }
+.reasoning-icon { display: grid; place-items: center; color: var(--accent-2); }
+.reasoning-label { font-weight: var(--weight-bold); }
+.reasoning-caret { margin-left: auto; transition: transform .2s ease; }
+.reasoning-caret.is-open { transform: rotate(-180deg); }
+.reasoning-content {
+  padding: 10px 12px; border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: rgba(157,140,255,.03); font-size: var(--text-xs);
+  color: var(--muted); line-height: 1.6; max-height: 200px; overflow-y: auto;
+}
+.reasoning-line { margin: 0 0 6px; }

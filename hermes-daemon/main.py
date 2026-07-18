@@ -34,7 +34,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from docx import Document
 from fastapi import FastAPI, HTTPException, Depends, Header, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pypdf import PdfReader
@@ -505,6 +505,189 @@ async def chat(req: ChatRequest, _: bool = Depends(verify_token)):
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erreur Minimax: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Streaming SSE (ChatGPT-style token-by-token with tool calls)
+# ---------------------------------------------------------------------------
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest, _: bool = Depends(verify_token)):
+    """Envoie une conversation à MiniMax en streaming SSE, avec outils."""
+    from fastapi import Request
+    api_key, base_url, configured_model = _get_minimax_config()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="MiniMax n'est pas configuré.")
+
+    # Préparation des messages (identique à /api/chat)
+    messages: List[Dict[str, Any]] = []
+    for message in _trim_messages(req.messages, req.context_tokens):
+        content = message.content
+        attachment_context = _attachment_context(message.attachments)
+        if attachment_context:
+            content = f"{content}\n\n{attachment_context}".strip()
+        provider_message: Dict[str, Any] = {"role": message.role, "content": content}
+        if message.role == "assistant" and message.reasoning_details:
+            provider_message["reasoning_details"] = message.reasoning_details
+        if message.tool_calls:
+            provider_message["tool_calls"] = message.tool_calls
+        if message.tool_call_id:
+            provider_message["tool_call_id"] = message.tool_call_id
+        if message.name:
+            provider_message["name"] = message.name
+        messages.append(provider_message)
+
+    selected_agent: Optional[AgentConfig] = None
+    effective_tool_names: List[str] = []
+    if req.agent_name:
+        selected_agent = AGENTS.get(req.agent_name)
+        if not selected_agent:
+            raise HTTPException(status_code=404, detail="Agent introuvable.")
+        system_prompt = selected_agent.system_prompt.strip()
+        effective_tool_names = req.tool_names if req.tool_names is not None else selected_agent.tools
+        if effective_tool_names:
+            system_prompt += f"\n\nOutils autorisés pour cette mission : {', '.join(effective_tool_names)}."
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+    elif req.tool_names:
+        effective_tool_names = req.tool_names
+        messages.insert(0, {"role": "system", "content": f"Outils autorisés pour cette conversation : {', '.join(req.tool_names)}."})
+
+    model = req.model or (selected_agent.model if selected_agent and selected_agent.model else None) or configured_model
+    provider_tools = [
+        {"type": "function", "function": {"name": name, "description": TOOL_REGISTRY[name]["description"], "parameters": TOOL_REGISTRY[name]["parameters"]}}
+        for name in effective_tool_names
+    ]
+
+    async def generate():
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            try:
+                for iteration in range(5):
+                    payload: Dict[str, Any] = {
+                        "model": model,
+                        "messages": messages,
+                        "temperature": selected_agent.temperature if selected_agent else req.temperature,
+                        "max_completion_tokens": selected_agent.max_tokens if selected_agent else req.max_tokens,
+                        "reasoning_split": True,
+                        "stream": True,  # ← la clé : demande SSE à MiniMax
+                    }
+                    if provider_tools:
+                        payload["tools"] = provider_tools
+                        payload["tool_choice"] = "auto"
+
+                    tool_calls_buffer: List[Dict[str, Any]] = []
+                    assistant_content_parts: List[str] = []
+                    finish_reason: Optional[str] = None
+                    final_model: Optional[str] = None
+
+                    async with client.stream(
+                        "POST",
+                        f"{base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json=payload,
+                    ) as response:
+                        response.raise_for_status()
+                        async for raw_line in response.aiter_lines():
+                            line = raw_line.strip()
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            choices = chunk.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+                            finish_reason = choices[0].get("finish_reason") or finish_reason
+                            final_model = chunk.get("model") or final_model
+
+                            # Tool calls (streamés en fragments)
+                            tool_deltas = delta.get("tool_calls") or []
+                            for td in tool_deltas:
+                                idx = td.get("index", 0)
+                                while len(tool_calls_buffer) <= idx:
+                                    tool_calls_buffer.append({"id": "", "function": {"name": "", "arguments": ""}})
+                                if "id" in td and td["id"]:
+                                    tool_calls_buffer[idx]["id"] = td["id"]
+                                fn = td.get("function") or {}
+                                if "name" in fn and fn["name"]:
+                                    tool_calls_buffer[idx]["function"]["name"] = fn["name"]
+                                if "arguments" in fn and fn["arguments"]:
+                                    tool_calls_buffer[idx]["function"]["arguments"] += fn["arguments"]
+
+                            # Contenu
+                            content_delta = delta.get("content") or ""
+                            if content_delta:
+                                assistant_content_parts.append(content_delta)
+                                yield f"data: {json.dumps({'event': 'delta', 'content': content_delta}, ensure_ascii=False)}\n\n"
+
+                            # Reasoning (streamé)
+                            reasoning = delta.get("reasoning_details") or None
+                            if reasoning:
+                                yield f"data: {json.dumps({'event': 'reasoning', 'details': reasoning}, ensure_ascii=False)}\n\n"
+
+                    # Fin du stream MiniMax
+                    if tool_calls_buffer:
+                        # Un ou plusieurs tool calls ont été détectés
+                        yield f"data: {json.dumps({'event': 'tool_calls_detected', 'count': len(tool_calls_buffer)}, ensure_ascii=False)}\n\n"
+                        assistant_message = {
+                            "role": "assistant",
+                            "content": "".join(assistant_content_parts),
+                            "tool_calls": tool_calls_buffer,
+                        }
+                        messages.append(assistant_message)
+                        for call in tool_calls_buffer:
+                            fn = call.get("function") or {}
+                            tool_name = str(fn.get("name") or "")
+                            raw_args = fn.get("arguments") or "{}"
+                            try:
+                                arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                            except json.JSONDecodeError:
+                                arguments = {}
+                            yield f"data: {json.dumps({'event': 'tool_call', 'tool': tool_name, 'args': arguments}, ensure_ascii=False, default=str)}\n\n"
+                            if tool_name not in effective_tool_names:
+                                result = {"error": "Outil non autorisé pour cette conversation."}
+                            else:
+                                result = await _execute_tool(tool_name, arguments if isinstance(arguments, dict) else {})
+                            yield f"data: {json.dumps({'event': 'tool_result', 'tool': tool_name, 'status': 'error' if 'error' in result else 'success', 'result': result}, ensure_ascii=False, default=str)}\n\n"
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call.get("id") or uuid4().hex,
+                                "name": tool_name,
+                                "content": json.dumps(result, ensure_ascii=False, default=str)[:120_000],
+                            })
+                        # Continuer la boucle — le modèle va répondre après les tool results
+                        continue
+                    else:
+                        # Réponse finale (sans tool calls)
+                        content = "".join(assistant_content_parts)
+                        if not content:
+                            yield f"data: {json.dumps({'event': 'error', 'message': 'MiniMax a renvoyé une réponse vide.'}, ensure_ascii=False)}\n\n"
+                            return
+                        yield f"data: {json.dumps({'event': 'done', 'content': content, 'model': final_model or model, 'finish_reason': finish_reason or 'stop'}, ensure_ascii=False)}\n\n"
+                        return
+
+                # Épuisé les 5 itérations
+                yield f"data: {json.dumps({'event': 'error', 'message': 'MiniMax n'a pas produit de réponse finale après les appels d'outils.'}, ensure_ascii=False)}\n\n"
+            except httpx.HTTPStatusError as e:
+                detail = "MiniMax a refusé la requête."
+                if e.response.status_code == 401:
+                    detail = "Clé API MiniMax rejetée."
+                elif e.response.status_code == 429:
+                    detail = "Limite de requêtes MiniMax atteinte."
+                yield f"data: {json.dumps({'event': 'error', 'message': detail}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                LOGGER.exception("Erreur streaming")
+                yield f"data: {json.dumps({'event': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    })
 
 
 # ---------------------------------------------------------------------------
