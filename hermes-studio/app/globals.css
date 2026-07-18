@@ -619,6 +619,7 @@ h3 { font-size: 1.08rem; font-weight: 700; }
   color: var(--text);
   background: rgba(255, 255, 255, .045);
 }
+.compact-row + .compact-row { margin-top: 3px; }
 .compact-row.is-active {
   color: var(--text);
   background: linear-gradient(90deg, rgba(157, 140, 255, .17), rgba(157, 140, 255, .04));
@@ -638,9 +639,13 @@ h3 { font-size: 1.08rem; font-weight: 700; }
   font-weight: 700;
 }
 .compact-row-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--dim);
   font: 9px 'DM Mono', monospace;
 }
+.compact-agent-name { color: var(--accent-2); font-weight: 700; }
 .sidebar-show-all {
   display: flex;
   align-items: center;

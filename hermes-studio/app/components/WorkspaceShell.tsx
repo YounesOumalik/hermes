@@ -577,6 +577,7 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
                   <section key={group.key} className={`agent-group ${isCollapsed ? 'collapsed' : ''}`}>
                     <button
                       className="agent-group-header"
+                      aria-expanded={!isCollapsed}
                       onClick={() => toggleGroup(group.key)}
                       onMouseEnter={(event) => showTooltip(isCollapsed ? 'Déplier le groupe' : 'Replier le groupe', event)}
                       onMouseLeave={hideTooltip}
@@ -645,7 +646,6 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
                   conversation={conversation}
                   active={conversation.id === activeConversationId}
                   onOpen={openConversation}
-                  preview={previews[conversation.id] || ''}
                 />
               ))}
               {conversations.length > compactRecent.length && (
@@ -778,9 +778,7 @@ function ConversationCard(props: ConversationCardProps) {
         type="button"
         className="conversation-card-main"
         onClick={(event) => onOpen(conversation, event as unknown as MouseEvent)}
-        title={conversation.title}
-        onMouseEnter={(event) => onShowTooltip(conversation.title, event)}
-        onMouseLeave={onHideTooltip}
+        aria-label={`Ouvrir « ${conversation.title} » avec ${agentName}`}
       >
         <span
           className="agent-avatar-bubble small"
@@ -803,7 +801,7 @@ function ConversationCard(props: ConversationCardProps) {
               />
             </form>
           ) : (
-            <span className="conversation-card-title" title={conversation.title}>
+            <span className="conversation-card-title">
               {truncate(conversation.title, 60)}
             </span>
           )}
@@ -826,7 +824,7 @@ function ConversationCard(props: ConversationCardProps) {
           <span className="conversation-card-footer">
             <span className="meta-relative">{updatedRelative}</span>
             {toolCount > 0 && (
-              <span className="meta-tools" title={`${toolCount} outil${toolCount > 1 ? 's' : ''}`}>
+              <span className="meta-tools" aria-label={`${toolCount} outil${toolCount > 1 ? 's' : ''}`}>
                 {toolCount} outil{toolCount > 1 ? 's' : ''}
               </span>
             )}
@@ -885,29 +883,29 @@ function ConversationCard(props: ConversationCardProps) {
 type CompactRowProps = {
   conversation: ConversationSummary;
   active: boolean;
-  preview: string;
   onOpen: (conversation: ConversationSummary, event: MouseEvent) => void;
 };
 
-function CompactConversationRow({ conversation, active, preview, onOpen }: CompactRowProps) {
-  const paletteEntry = paletteFor(conversation.agent_name || 'Hermes Core');
+function CompactConversationRow({ conversation, active, onOpen }: CompactRowProps) {
+  const agentName = conversation.agent_name || 'Hermes Core';
+  const paletteEntry = paletteFor(agentName);
   return (
     <button
       type="button"
       className={`compact-row ${active ? 'is-active' : ''}`}
       onClick={(event) => onOpen(conversation, event as unknown as MouseEvent)}
-      title={preview || conversation.title}
+      aria-label={`Ouvrir « ${conversation.title} » avec ${agentName}`}
     >
       <span
         className="agent-avatar-bubble tiny"
         style={{ background: paletteEntry.gradient, color: paletteEntry.text, boxShadow: `inset 0 0 0 1px ${paletteEntry.ring}` }}
         aria-hidden="true"
       >
-        {initials(conversation.agent_name || 'Hermes Core')}
+        {initials(agentName)}
       </span>
       <span className="compact-row-meta">
         <strong>{truncate(conversation.title, 32)}</strong>
-        <small>{formatRelativeDate(conversation.updated_at)}</small>
+        <small><span className="compact-agent-name">{agentName}</span><span aria-hidden="true"> · </span>{formatRelativeDate(conversation.updated_at)}</small>
       </span>
     </button>
   );
