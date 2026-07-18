@@ -12,6 +12,7 @@ import {
   LayoutGrid,
   LogOut,
   MessageSquare,
+  Monitor,
   Moon,
   MoreHorizontal,
   PanelLeftClose,
@@ -154,7 +155,8 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mode, setMode] = useState<SidebarMode>('wide');
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [theme, setTheme] = useState<'dark' | 'light' | 'system'>('system');
+  const [resolvedTheme, setResolvedTheme] = useState<'dark' | 'light'>('dark');
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [previews, setPreviews] = useState<Record<string, string>>({});
@@ -214,9 +216,14 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     if (typeof window === 'undefined') return;
     const savedMode = window.localStorage.getItem('hermes-sidebar-mode');
     setMode(savedMode === 'compact' ? 'compact' : 'wide');
-    const savedTheme = window.localStorage.getItem('hermes-theme') === 'light' ? 'light' : 'dark';
-    setTheme(savedTheme);
-    document.documentElement.dataset.theme = savedTheme;
+    const savedThemeRaw = window.localStorage.getItem('hermes-theme');
+    const initialTheme: 'dark' | 'light' | 'system' = savedThemeRaw === 'light' || savedThemeRaw === 'dark' || savedThemeRaw === 'system' ? savedThemeRaw : 'system';
+    setTheme(initialTheme);
+    const resolved = initialTheme === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+      : initialTheme;
+    setResolvedTheme(resolved);
+    document.documentElement.dataset.theme = resolved;
     const savedWidth = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
     if (!Number.isNaN(savedWidth) && savedWidth >= SIDEBAR_MIN_WIDTH && savedWidth <= SIDEBAR_MAX_WIDTH) {
       setSidebarWidth(savedWidth);
@@ -227,9 +234,24 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     if (savedShowWorkspace === 'false') setShowWorkspace(false);
   }, []);
 
+  // Applique le thème résolu à chaque changement + écoute le système si mode "system".
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    if (typeof window === 'undefined') return;
+    const apply = (value: 'dark' | 'light') => {
+      setResolvedTheme(value);
+      document.documentElement.dataset.theme = value;
+    };
+    if (theme === 'system') {
+      const media = window.matchMedia('(prefers-color-scheme: light)');
+      apply(media.matches ? 'light' : 'dark');
+      const handler = (event: MediaQueryListEvent) => apply(event.matches ? 'light' : 'dark');
+      media.addEventListener('change', handler);
+      window.localStorage.setItem('hermes-theme', 'system');
+      return () => media.removeEventListener('change', handler);
+    }
+    apply(theme);
     window.localStorage.setItem('hermes-theme', theme);
+    return undefined;
   }, [theme]);
 
   useEffect(() => {
@@ -822,15 +844,15 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
             )}
             <button
               className="icon-button theme-toggle"
-              onClick={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
-              aria-label={theme === 'dark' ? 'Activer le mode clair' : 'Activer le mode sombre'}
-              title={theme === 'dark' ? 'Mode clair' : 'Mode sombre'}
-              onMouseEnter={(event) => showTooltip(theme === 'dark' ? 'Mode clair' : 'Mode sombre', event)}
+              onClick={() => setTheme((value) => (value === 'dark' ? 'light' : value === 'light' ? 'system' : 'dark'))}
+              aria-label={theme === 'dark' ? 'Activer le mode clair' : theme === 'light' ? 'Activer le mode système' : 'Activer le mode sombre'}
+              title={theme === 'dark' ? 'Mode sombre' : theme === 'light' ? 'Mode clair' : 'Mode système'}
+              onMouseEnter={(event) => showTooltip(theme === 'dark' ? 'Mode sombre → clair' : theme === 'light' ? 'Mode clair → système' : 'Mode système → sombre', event)}
               onMouseLeave={hideTooltip}
-              onFocus={(event) => showTooltip(theme === 'dark' ? 'Mode clair' : 'Mode sombre', event)}
+              onFocus={(event) => showTooltip(theme === 'dark' ? 'Mode sombre → clair' : theme === 'light' ? 'Mode clair → système' : 'Mode système → sombre', event)}
               onBlur={hideTooltip}
             >
-              {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+              {theme === 'dark' ? <Moon size={15} /> : theme === 'light' ? <Sun size={15} /> : <Monitor size={15} />}
             </button>
             {!compact && (
               <button

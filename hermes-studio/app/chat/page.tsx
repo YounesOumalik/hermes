@@ -2,8 +2,9 @@
 
 import { ArrowUp, Bot, Check, ChevronDown, Copy, Paperclip, Plus, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Square, Terminal, UserRound, WandSparkles, Wrench, X } from 'lucide-react';
 import type { ComponentType } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Agent, Attachment, Conversation, ConversationMessage, Tool, api } from '../lib/api';
+import Markdown from './components/Markdown';
 
 type ReasoningDetail = Record<string, unknown>;
 type ChatMessage = ConversationMessage;
@@ -21,15 +22,12 @@ const contextOptions = [
   { value: 1_000_000, label: '1M' },
 ];
 
-function greeting(agentName?: string): ChatMessage {
-  return {
-    role: 'assistant',
-    content: agentName
-      ? `Bonjour Younes. Je suis ${agentName}. Comment puis-je vous aider ?`
-      : 'Bonjour Younes. Je suis Hermes, votre workspace d’orchestration. Que voulez-vous construire aujourd’hui ?',
-    time: 'maintenant',
-  };
-}
+const suggestions = [
+  { icon: Terminal, label: 'Analyse l’état de mon installation Hermes', hint: 'Système' },
+  { icon: Bot, label: 'Crée un agent spécialisé DevOps', hint: 'Agents' },
+  { icon: Sparkles, label: 'Explique-moi l’architecture du workspace', hint: 'Doc' },
+  { icon: WandSparkles, label: 'Planifie mon sprint de la semaine', hint: 'Plan' },
+];
 
 function contextLabel(tokens: number) {
   return tokens >= 1_000_000 ? '1M' : `${Math.round(tokens / 1000)}K`;
@@ -69,6 +67,12 @@ export default function ChatPage() {
   const [showInstructionsSection, setShowInstructionsSection] = useState<boolean>(true);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesListRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   const canSend = (input.trim().length > 0 || pendingAttachments.length > 0) && !loading && !initialising;
   const activeAgent = agents.find((agent) => agent.name === selectedAgentName);
@@ -99,6 +103,25 @@ useEffect(() => {
     window.localStorage.setItem('hermes-context-instructions-hidden', String(!showInstructionsSection));
   }, [showInstructionsSection]);
 
+  // Auto-scroll : on descend en bas si l'utilisateur est "piné" en bas.
+  useEffect(() => {
+    if (!isPinnedToBottom) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [messages, loading, isPinnedToBottom]);
+
+  // Auto-grow du composer : ajuste la hauteur en fonction du contenu.
+  const resizeComposer = useCallback(() => {
+    const textarea = composerRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const next = Math.min(textarea.scrollHeight, 240);
+    textarea.style.height = `${next}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    resizeComposer();
+  }, [input, resizeComposer]);
+
 useEffect(() => {
     let cancelled = false;
     async function initialise() {
@@ -124,6 +147,27 @@ useEffect(() => {
           applyConversation(conversation);
         } else {
           const agent = loadedAgents.find((item) => item.name === requestedAgent);
+          // Réutiliser la dernière conversation vide (< 1 h, sans message utilisateur)
+          // plutôt que d'en créer une nouvelle à chaque visite de /chat.
+          const existing = await api.get<{ conversations: Conversation[] }>('api/conversations');
+          if (cancelled) return;
+          const recent = (existing.conversations || []).find((conv) => {
+            if (conv.title !== 'Nouvelle conversation') return false;
+            const updated = new Date(conv.updated_at).getTime();
+            if (Number.isNaN(updated) || Date.now() - updated > 60 * 60 * 1000) return false;
+            if (requestedAgent && (conv.agent_name || '') !== requestedAgent) return false;
+            return true;
+          });
+          if (recent) {
+            const full = await api.get<Conversation>(`api/conversations/${encodeURIComponent(recent.id)}`);
+            if (cancelled) return;
+            const hasUserMessage = (full.messages || []).some((msg) => msg.role === 'user');
+            if (!hasUserMessage) {
+              applyConversation(full, agent?.name || '');
+              window.history.replaceState(null, '', `/chat?conversation=${full.id}`);
+              return;
+            }
+          }
           const initialContext = defaultContext(agent?.model || statusResult.model);
           const conversation = await api.post<Conversation>('api/conversations', {
             title: 'Nouvelle conversation',
@@ -155,7 +199,8 @@ useEffect(() => {
     setSelectedTools(conversation.tool_names || coreTools);
     setContextTokens(conversation.context_tokens || defaultContext(conversation.model));
     setPendingAttachments([]);
-    setMessages(conversation.messages?.length ? conversation.messages : [greeting(conversation.agent_name || fallbackAgent || undefined)]);
+    setMessages(conversation.messages || []);
+    setIsPinnedToBottom(true);
   }
 
   async function persistConversation(nextMessages: ChatMessage[], titleOverride?: string) {
@@ -243,9 +288,29 @@ useEffect(() => {
   }
 
   function stopGeneration() {
-    abortRef.current?.abort();
+    if (!abortRef.current) {
+      setLoading(false);
+      setStopping(false);
+      return;
+    }
+    setStopping(true);
+    abortRef.current.abort();
     abortRef.current = null;
+    // Persister l'état partiel : ajouter un message assistant "interrompu".
+    setMessages((current) => {
+      const lastIsUser = current[current.length - 1]?.role === 'user';
+      if (!lastIsUser) return current;
+      const interrupted: ChatMessage = {
+        role: 'assistant',
+        content: '⏹ Génération interrompue. Cliquez sur Régénérer pour relancer.',
+        time: 'interrompu',
+      };
+      const next = [...current, interrupted];
+      void persistConversation(next);
+      return next;
+    });
     setLoading(false);
+    setStopping(false);
   }
 
   async function createNewConversation() {
@@ -330,8 +395,51 @@ useEffect(() => {
     <div className="chat-body">
       <section className="messages-column">
         <div className="context-strip"><span><span className={`status-dot ${providerStatus?.minimax_configured ? 'online' : ''}`} /> {providerLabel}</span><span>{activeModel}</span><span>{contextLabel(contextTokens)} contexte</span></div>
-        <div className="message-list">{initialising && <div className="loading-state">Chargement de la conversation…</div>}{messages.map((message, index) => <Message key={`${message.time}-${index}`} message={message} index={index} onCopy={copyMessage} onRegenerate={regenerate} copied={copied === index} />)}{loading && <div className="message assistant-message"><span className="message-avatar hermes-avatar"><Sparkles size={15} /></span><div className="message-content"><div className="message-meta"><strong>{activeName}</strong><span>réfléchit</span></div><div className="thinking"><span /><span /><span /></div></div></div>}</div>
-        <div className="composer-wrap"><div className="suggestion-row"><button onClick={() => setInput('Analyse l’état de mon installation Hermes')}><WandSparkles size={14} /> Analyser mon installation</button><button onClick={() => setInput('Crée un agent spécialisé pour mon projet')}><Bot size={14} /> Créer un agent</button></div><form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input ref={fileInputRef} className="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,.xml,.html,.css,.js,.ts,.py,.sql,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); }} /><div className="attachment-strip">{pendingAttachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /><span>{attachment.name}</span><button type="button" onClick={() => removePendingAttachment(attachment.id)} aria-label={`Supprimer ${attachment.name}`}><X size={13} /></button></span>)}{uploading && <span className="attachment-uploading">Téléversement…</span>}{uploadError && <span className="attachment-error">{uploadError}</span>}</div><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={`Écrivez une instruction à ${activeName}…`} rows={2} aria-label="Message à Hermes" /><div className="composer-toolbar"><button type="button" className="icon-button" aria-label="Joindre un fichier" title="Joindre un fichier ou déposer ici" onClick={() => fileInputRef.current?.click()} disabled={uploading}><Paperclip size={17} /></button><span className="composer-hint">Déposez un fichier ici · Entrée pour envoyer · ⇧ Entrée pour une nouvelle ligne</span><button className={`send-button ${canSend ? 'ready' : ''}`} type={loading ? 'button' : 'submit'} onClick={loading ? stopGeneration : undefined} disabled={!canSend && !loading} aria-label={loading ? 'Arrêter' : 'Envoyer'}>{loading ? <Square size={15} fill="currentColor" /> : <ArrowUp size={17} />}</button></div></form><p className="composer-disclaimer">Hermes peut faire des erreurs. Vérifiez les actions importantes.</p></div>
+        <div
+          className="message-list"
+          ref={messagesListRef}
+          onScroll={(event) => {
+            const el = event.currentTarget;
+            const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+            const nearBottom = distanceFromBottom < 120;
+            setIsPinnedToBottom(nearBottom);
+            setShowJumpToBottom(!nearBottom && messages.length > 2);
+          }}
+        >
+          {initialising && <div className="loading-state">Chargement de la conversation…</div>}
+          {!initialising && messages.length === 0 && (
+            <div className="chat-empty-state">
+              <span className="empty-mark"><Sparkles size={24} /></span>
+              <h2>Que voulez-vous construire ?</h2>
+              <p>Hermes · {activeName} · {activeModel}</p>
+              <div className="empty-suggestions">
+                {suggestions.map((s) => (
+                  <button key={s.label} type="button" className="empty-suggestion" onClick={() => { setInput(s.label); composerRef.current?.focus(); }}>
+                    <span className="empty-suggestion-icon"><s.icon size={15} /></span>
+                    <span><strong>{s.label}</strong><small>{s.hint}</small></span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {messages.map((message, index) => <Message key={`${message.time}-${index}`} message={message} index={index} onCopy={copyMessage} onRegenerate={regenerate} copied={copied === index} />)}
+          {loading && <div className="message assistant-message"><span className="message-avatar hermes-avatar"><Sparkles size={15} /></span><div className="message-content"><div className="message-meta"><strong>{activeName}</strong><span>{stopping ? 'arrêt en cours…' : 'réfléchit'}</span></div><div className="thinking"><span /><span /><span /></div></div></div>}
+          <div ref={messagesEndRef} />
+        </div>
+        {showJumpToBottom && (
+          <button
+            type="button"
+            className="jump-to-bottom"
+            aria-label="Aller en bas"
+            onClick={() => {
+              setIsPinnedToBottom(true);
+              messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            }}
+          >
+            <ChevronDown size={16} />
+          </button>
+        )}
+        <div className="composer-wrap"><form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input ref={fileInputRef} className="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,.xml,.html,.css,.js,.ts,.py,.sql,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); }} /><div className="attachment-strip">{pendingAttachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /><span>{attachment.name}</span><button type="button" onClick={() => removePendingAttachment(attachment.id)} aria-label={`Supprimer ${attachment.name}`}><X size={13} /></button></span>)}{uploading && <span className="attachment-uploading">Téléversement…</span>}{uploadError && <span className="attachment-error">{uploadError}</span>}</div><textarea ref={composerRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={`Écrivez une instruction à ${activeName}…`} rows={2} aria-label="Message à Hermes" /><div className="composer-toolbar"><button type="button" className="icon-button" aria-label="Joindre un fichier" title="Joindre un fichier ou déposer ici" onClick={() => fileInputRef.current?.click()} disabled={uploading}><Paperclip size={17} /></button><span className="composer-hint">Entrée pour envoyer · ⇧ Entrée pour une nouvelle ligne</span><button className={`send-button ${canSend ? 'ready' : ''}`} type={loading ? 'button' : 'submit'} onClick={loading ? stopGeneration : undefined} disabled={!canSend && !loading} aria-label={loading ? 'Arrêter' : 'Envoyer'}>{loading ? <Square size={15} fill="currentColor" /> : <ArrowUp size={17} />}</button></div></form><p className="composer-disclaimer">Hermes peut faire des erreurs. Vérifiez les actions importantes.</p></div>
       </section>
       <aside className={`context-panel ${showContextPanel ? '' : 'is-hidden'}`}>
         {showContextPanel ? (
@@ -410,7 +518,8 @@ useEffect(() => {
 
 function Message({ message, index, onCopy, onRegenerate, copied }: { message: ChatMessage; index: number; onCopy: (index: number, content: string) => void; onRegenerate: () => void; copied: boolean }) {
   const user = message.role === 'user';
-  return <div className={`message ${user ? 'user-message' : 'assistant-message'}`}><span className={`message-avatar ${user ? 'user-avatar' : 'hermes-avatar'}`}>{user ? <UserRound size={15} /> : <Sparkles size={15} />}</span><div className="message-content"><div className="message-meta"><strong>{user ? 'Vous' : 'Hermes'}</strong><span>{message.time}</span></div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /> {attachment.name}</span>)}</div> : null}<div className="message-text">{message.content}</div>{!user && <div className="message-actions"><button onClick={() => onCopy(index, message.content)}><Copy size={13} /> {copied ? 'Copié' : 'Copier'}</button><button onClick={onRegenerate}><RotateCcw size={13} /> Régénérer</button></div>}</div></div>;
+  const isInterrupted = message.time === 'interrompu';
+  return <div className={`message ${user ? 'user-message' : 'assistant-message'} ${isInterrupted ? 'is-interrupted' : ''}`}><span className={`message-avatar ${user ? 'user-avatar' : 'hermes-avatar'}`}>{user ? <UserRound size={15} /> : <Sparkles size={15} />}</span><div className="message-content"><div className="message-meta"><strong>{user ? 'Vous' : 'Hermes'}</strong><span>{message.time}</span></div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /> {attachment.name}</span>)}</div> : null}<div className="message-text">{user ? message.content : <Markdown>{message.content}</Markdown>}</div>{!user && !isInterrupted && <div className="message-actions"><button onClick={() => onCopy(index, message.content)}><Copy size={13} /> {copied ? 'Copié' : 'Copier'}</button><button onClick={onRegenerate}><RotateCcw size={13} /> Régénérer</button></div>}</div></div>;
 }
 
 function ContextTool({ icon: Icon, name, status }: { icon: ComponentType<{ size?: string | number }>; name: string; status: string }) {
