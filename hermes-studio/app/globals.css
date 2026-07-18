@@ -157,8 +157,13 @@ h3 { font-size: 1.08rem; font-weight: 700; }
 .attachment-error { color: var(--danger); }
 :root[data-theme="light"] .message-text, :root[data-theme="light"] .assistant-message .message-text { color: #172033; }
 :root[data-theme="light"] .message-meta span, :root[data-theme="light"] .composer-hint { color: #65738a; }
-:root[data-theme="light"] .composer textarea { color: #172033; }
-:root[data-theme="light"] .composer textarea::placeholder { color: #718097; }
+:root[data-theme="light"] .composer textarea { min-height: 82px; padding: 12px 14px; color: #172033; caret-color: #5a4bd6; border: 1px solid rgba(34,49,76,.2); border-radius: 10px; background: #ffffff; box-shadow: inset 0 1px 2px rgba(34,49,76,.05); }
+:root[data-theme="light"] .composer textarea:focus { border-color: #6d5de7; box-shadow: 0 0 0 3px rgba(109,93,231,.13), inset 0 1px 2px rgba(34,49,76,.05); }
+:root[data-theme="light"] .composer textarea::placeholder { color: #5f6f87; opacity: 1; }
+:root[data-theme="light"] .composer-hint { color: #53647d; }
+:root[data-theme="light"] .composer .icon-button { color: #53647d; }
+:root[data-theme="light"] .composer .icon-button:hover { color: #342a8a; background: rgba(109,93,231,.1); }
+:root[data-theme="light"] .composer .send-button:not(.ready) { color: #687991; background: #e3e9f3; }
 :root[data-theme="light"] .attachment-chip { color: #3c4a61; background: rgba(109,93,231,.08); }
 .connector-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .connector-card > div { display: grid; gap: 3px; min-width: 0; }
