@@ -632,10 +632,12 @@ async def _handle_telegram_message(token: str, allowed_chat_id: str, message: Di
         telegram_agent = AGENTS.get(telegram_agent_name) if telegram_agent_name else None
         telegram_model = (telegram_agent.model if telegram_agent and telegram_agent.model else _get_minimax_config()[2]).lower()
         telegram_context_tokens = 1_000_000 if "m3" in telegram_model else 200_000
+        telegram_tools = telegram_agent.tools if telegram_agent else ["web_search", "web_fetch", "server_diagnostics", "mcp_terminal"]
         response = await chat(
             ChatRequest(
                 messages=history,
                 agent_name=telegram_agent_name or None,
+                tool_names=telegram_tools,
                 temperature=0.7,
                 max_tokens=1200,
                 context_tokens=telegram_context_tokens,
