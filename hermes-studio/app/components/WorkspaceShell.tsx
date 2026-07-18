@@ -9,7 +9,6 @@ import {
   ChevronRight,
   Command,
   Home,
-  LayoutGrid,
   LogOut,
   MessageSquare,
   Monitor,
@@ -39,7 +38,10 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Agent, ConversationMessage, ConversationSummary, api } from '../lib/api';
+import { Agent, ConversationSummary, api } from '../lib/api';
+import ConfirmDialog from './ConfirmDialog';
+import { showToast } from './Toast';
+import CommandPalette from './CommandPalette';
 
 type AgentPalette = {
   id: string;
@@ -129,16 +131,6 @@ function truncate(value: string, max: number): string {
   return `${value.slice(0, max - 1).trim()}…`;
 }
 
-function previewFromMessages(messages: ConversationMessage[] | undefined): string {
-  if (!messages || !messages.length) return '';
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    const content = message?.content?.trim();
-    if (content) return truncate(content.replace(/\s+/g, ' '), 110);
-  }
-  return '';
-}
-
 function announceConversationsChanged() {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new Event('hermes:conversations-changed'));
@@ -159,7 +151,6 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
   const [resolvedTheme, setResolvedTheme] = useState<'dark' | 'light'>('dark');
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [previews, setPreviews] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
   const [agentFilter, setAgentFilter] = useState<string>('all');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
@@ -170,9 +161,9 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const tooltipTimer = useRef<number | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState<number>(SIDEBAR_DEFAULT_WIDTH);
-  const [showNewChat, setShowNewChat] = useState<boolean>(true);
-  const [showWorkspace, setShowWorkspace] = useState<boolean>(true);
   const resizeState = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ConversationSummary | null>(null);
 
   const isLogin = pathname === '/login';
   const isChatPage = pathname === '/chat';
@@ -228,10 +219,6 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     if (!Number.isNaN(savedWidth) && savedWidth >= SIDEBAR_MIN_WIDTH && savedWidth <= SIDEBAR_MAX_WIDTH) {
       setSidebarWidth(savedWidth);
     }
-    const savedShowNewChat = window.localStorage.getItem('hermes-sidebar-show-new-chat');
-    if (savedShowNewChat === 'false') setShowNewChat(false);
-    const savedShowWorkspace = window.localStorage.getItem('hermes-sidebar-show-workspace');
-    if (savedShowWorkspace === 'false') setShowWorkspace(false);
   }, []);
 
   // Applique le thème résolu à chaque changement + écoute le système si mode "system".
@@ -263,15 +250,18 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     if (!compact) window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
   }, [sidebarWidth, compact]);
 
+  // Cmd+K / Ctrl+K → pallette de recherche
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem('hermes-sidebar-show-new-chat', String(showNewChat));
-  }, [showNewChat]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem('hermes-sidebar-show-workspace', String(showWorkspace));
-  }, [showWorkspace]);
+    function handle(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'k') {
+        event.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    }
+    window.addEventListener('keydown', handle);
+    return () => window.removeEventListener('keydown', handle);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -298,34 +288,6 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
       window.removeEventListener('hermes:conversations-changed', refresh);
     };
   }, []);
-
-  useEffect(() => {
-    if (!conversations.length) return;
-    const ids = conversations.slice(0, 30).map((conversation) => conversation.id);
-    const missing = ids.filter((id) => previews[id] === undefined);
-    if (!missing.length) return;
-    let cancelled = false;
-    Promise.all(
-      missing.map((id) =>
-        api
-          .get<{ messages?: ConversationMessage[] }>(`api/conversations/${encodeURIComponent(id)}`)
-          .then((data) => ({ id, preview: previewFromMessages(data.messages) }))
-          .catch(() => ({ id, preview: '' })),
-      ),
-    ).then((entries) => {
-      if (cancelled) return;
-      setPreviews((current) => {
-        const next = { ...current };
-        entries.forEach(({ id, preview }) => {
-          next[id] = preview;
-        });
-        return next;
-      });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [conversations, previews]);
 
   useEffect(() => {
     if (!menuState?.open) return undefined;
@@ -357,31 +319,48 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     });
   }, [agentFilter, conversations, query]);
 
+  function getDateBucket(raw: string): string {
+    if (!raw) return 'older';
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return 'older';
+    const diffMs = Date.now() - date.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return 'today';
+    if (diffDays === 1) return 'yesterday';
+    if (diffDays < 7) return 'week';
+    if (diffDays < 30) return 'month';
+    return 'older';
+  }
+
+  const bucketLabels: Record<string, string> = {
+    today: 'Aujourd\'hui',
+    yesterday: 'Hier',
+    week: '7 derniers jours',
+    month: '30 derniers jours',
+    older: 'Plus ancien',
+  };
+
   const groupedConversations = useMemo(() => {
     const buckets = new Map<string, ConversationSummary[]>();
     filteredConversations.forEach((conversation) => {
-      const key = conversation.agent_name || '';
+      const key = getDateBucket(conversation.updated_at);
       const list = buckets.get(key) || [];
       list.push(conversation);
       buckets.set(key, list);
     });
-    return Array.from(buckets.entries())
-      .map(([key, items]) => {
-        const sample = items[0];
-        const agent = key ? agentByName.get(key) : undefined;
-        const paletteEntry = paletteFor(key || 'Hermes Core');
-        const modelLabel = sample.model || agent?.model || 'Modèle global';
-        return {
-          key: key || 'Hermes Core',
-          label: key || 'Hermes Core',
-          description: agent?.description || 'Assistant par défaut, modèle global, sans persona spécifique.',
-          model: modelLabel,
-          items,
-          palette: paletteEntry,
-          agent,
-        };
-      })
-      .sort((a, b) => a.label.localeCompare(b.label, 'fr'));
+    const order = ['today', 'yesterday', 'week', 'month', 'older'];
+    const agentByName = agents.reduce((map, a) => { map.set(a.name, a); return map; }, new Map<string, Agent>());
+    return order
+      .filter((key) => buckets.has(key))
+      .map((key) => ({
+        key,
+        label: bucketLabels[key] || key,
+        items: buckets.get(key)!,
+        palette: palette[0],  // neutral palette for date groups
+        agent: undefined,
+        model: '',
+        description: '',
+      }));
   }, [agentByName, filteredConversations]);
 
   const compactRecent = useMemo(() => filteredConversations.slice(0, 3), [filteredConversations]);
@@ -442,25 +421,24 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
     });
   }
 
-  async function deleteConversation(conversation: ConversationSummary) {
-    const confirmed = window.confirm(`Supprimer la conversation « ${conversation.title} » ?`);
-    if (!confirmed) return;
+  function deleteConversation(conversation: ConversationSummary) {
+    setDeleteTarget(conversation);
+  }
+
+  async function confirmDelete() {
+    const conversation = deleteTarget;
+    if (!conversation) return;
     setBusyId(conversation.id);
+    setDeleteTarget(null);
     try {
       await api.delete(`api/conversations/${encodeURIComponent(conversation.id)}`);
       setConversations((current) => current.filter((item) => item.id !== conversation.id));
-      setPreviews((current) => {
-        const next = { ...current };
-        delete next[conversation.id];
-        return next;
-      });
       setMenuState(null);
       announceConversationsChanged();
-      if (activeConversationId === conversation.id) {
-        router.push('/chat?new=1');
-      }
+      if (activeConversationId === conversation.id) router.push('/chat?new=1');
+      showToast('success', `« ${conversation.title} » supprimée.`);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Suppression impossible.');
+      showToast('error', error instanceof Error ? error.message : 'Suppression impossible.');
     } finally {
       setBusyId('');
     }
@@ -486,8 +464,9 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
         current.map((item) => (item.id === renamingId ? { ...item, title: trimmed } : item)),
       );
       announceConversationsChanged();
+      showToast('success', 'Conversation renommée.');
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Renommage impossible.');
+      showToast('error', error instanceof Error ? error.message : 'Renommage impossible.');
     } finally {
       setRenamingId('');
       setBusyId('');
@@ -525,7 +504,7 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
 
       {mobileOpen && <button className="mobile-backdrop" aria-label="Fermer le menu" onClick={() => setMobileOpen(false)} />}
       <aside
-        className={`sidebar ${mobileOpen ? 'sidebar-open' : ''} ${showNewChat ? '' : 'new-chat-hidden'} ${showWorkspace ? '' : 'workspace-hidden'}`}
+        className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}
         style={sidebarStyle as React.CSSProperties}
       >
         <div className="brand-row">
@@ -538,47 +517,27 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
             )}
           </Link>
           <div className="brand-actions">
-            {!compact && (
-              <button
-                className="icon-button"
-                onClick={() => setShowNewChat((value) => !value)}
-                aria-label={showNewChat ? 'Masquer le bouton Nouvelle conversation' : 'Afficher le bouton Nouvelle conversation'}
-                aria-pressed={showNewChat}
-                title={showNewChat ? 'Masquer le bouton' : 'Afficher le bouton'}
-                onMouseEnter={(event) => showTooltip(showNewChat ? 'Cacher la barre Nouvelle conversation' : 'Afficher la barre Nouvelle conversation', event)}
-                onMouseLeave={hideTooltip}
-                onFocus={(event) => showTooltip(showNewChat ? 'Cacher la barre Nouvelle conversation' : 'Afficher la barre Nouvelle conversation', event)}
-                onBlur={hideTooltip}
-              >
-                {showNewChat ? <X size={15} /> : <Plus size={15} />}
-              </button>
-            )}
-            {!compact && (
-              <button
-                className="icon-button"
-                onClick={() => setShowWorkspace((value) => !value)}
-                aria-label={showWorkspace ? 'Masquer la navigation Workspace' : 'Afficher la navigation Workspace'}
-                aria-pressed={showWorkspace}
-                title={showWorkspace ? 'Cacher le menu Workspace' : 'Afficher le menu Workspace'}
-                onMouseEnter={(event) => showTooltip(showWorkspace ? 'Cacher le menu Workspace' : 'Afficher le menu Workspace', event)}
-                onMouseLeave={hideTooltip}
-                onFocus={(event) => showTooltip(showWorkspace ? 'Cacher le menu Workspace' : 'Afficher le menu Workspace', event)}
-                onBlur={hideTooltip}
-              >
-                {showWorkspace ? <LayoutGrid size={15} /> : <LayoutGrid size={15} />}
-              </button>
-            )}
             <button
               className="icon-button sidebar-toggle"
               onClick={toggleMode}
               aria-label={compact ? 'Déployer la barre latérale' : 'Rétracter la barre latérale'}
-              title={compact ? 'Déployer la barre latérale' : 'Rétracter la barre latérale'}
+              title={compact ? 'Déployer' : 'Rétracter'}
               onMouseEnter={(event) => showTooltip(compact ? 'Déployer' : 'Rétracter', event)}
               onMouseLeave={hideTooltip}
               onFocus={(event) => showTooltip(compact ? 'Déployer' : 'Rétracter', event)}
               onBlur={hideTooltip}
             >
               {compact ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            </button>
+            <button
+              className="icon-button"
+              onClick={() => setPaletteOpen(true)}
+              aria-label="Recherche rapide (⌘K)"
+              title="Recherche rapide (⌘K)"
+              onMouseEnter={(event) => showTooltip('Recherche rapide (⌘K)', event)}
+              onMouseLeave={hideTooltip}
+            >
+              <Search size={16} />
             </button>
             <button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="Fermer le menu">
               <X size={18} />
@@ -597,7 +556,7 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
             )}
           </div>
 
-          {!compact && showNewChat && (
+          {!compact && (
             <Link
               href="/chat"
               className="new-chat"
@@ -612,23 +571,6 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
               <span className="sidebar-label">Nouvelle conversation</span>
               <span className="shortcut sidebar-label">⌘ K</span>
             </Link>
-          )}
-
-          {!compact && !showNewChat && (
-            <button
-              type="button"
-              className="new-chat new-chat-compact"
-              onClick={() => setShowNewChat(true)}
-              aria-label="Afficher le bouton Nouvelle conversation"
-              title="Afficher la barre Nouvelle conversation"
-              onMouseEnter={(event) => showTooltip('Afficher la barre Nouvelle conversation', event)}
-              onMouseLeave={hideTooltip}
-              onFocus={(event) => showTooltip('Afficher la barre Nouvelle conversation', event)}
-              onBlur={hideTooltip}
-            >
-              <Plus size={17} />
-              <span className="sr-only">Afficher la barre Nouvelle conversation</span>
-            </button>
           )}
 
           {compact && (
@@ -724,7 +666,6 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
                             agent={group.agent}
                             paletteEntry={group.palette}
                             active={conversation.id === activeConversationId}
-                            preview={previews[conversation.id] || ''}
                             menuOpen={menuState?.conversationId === conversation.id && menuState.open}
                             renaming={renamingId === conversation.id}
                             renameDraft={renameDraft}
@@ -775,50 +716,31 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        {/* NAVIGATION — sous les conversations. Cachable via le toggle Workspace. */}
-        {showWorkspace && !compact && (
-          <>
-            <div className="sidebar-section-label nav-header sidebar-label">Workspace</div>
-            <nav className="sidebar-nav" aria-label="Navigation principale">
-              {navigation.map(({ href, label, icon: Icon }) => {
-                const active = pathname === href || (href === '/chat' && Boolean(pathname?.startsWith('/chat')));
-                return (
-                  <Link
-                    key={href}
-                    href={href}
-                    onClick={() => setMobileOpen(false)}
-                    className={active ? 'nav-link active' : 'nav-link'}
-                    onMouseEnter={(event) => showTooltip(label, event)}
-                    onMouseLeave={hideTooltip}
-                    onFocus={(event) => showTooltip(label, event)}
-                    onBlur={hideTooltip}
-                  >
-                    <Icon size={17} strokeWidth={1.8} />
-                    {!compact && <span className="sidebar-label">{label}</span>}
-                    {!compact && href === '/chat' && <span className="nav-badge">{totalConversations || ''}</span>}
-                    {compact && href === '/chat' && <span className="nav-badge-compact">{totalConversations || ''}</span>}
-                  </Link>
-                );
-              })}
-            </nav>
-          </>
-        )}
-
-        {!showWorkspace && !compact && (
-          <button
-            type="button"
-            className="workspace-restore"
-            onClick={() => setShowWorkspace(true)}
-            aria-label="Afficher le menu Workspace"
-            title="Afficher le menu Workspace"
-            onMouseEnter={(event) => showTooltip('Afficher le menu Workspace', event)}
-            onMouseLeave={hideTooltip}
-            onFocus={(event) => showTooltip('Afficher le menu Workspace', event)}
-            onBlur={hideTooltip}
-          >
-            <LayoutGrid size={14} />
-            <span>Workspace</span>
-          </button>
+        {/* NAVIGATION — sous les conversations. */}
+        {!compact && <div className="sidebar-section-label nav-header sidebar-label">Workspace</div>}
+        {!compact && (
+          <nav className="sidebar-nav" aria-label="Navigation principale">
+            {navigation.map(({ href, label, icon: Icon }) => {
+              const active = pathname === href || (href === '/chat' && Boolean(pathname?.startsWith('/chat')));
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  onClick={() => setMobileOpen(false)}
+                  className={active ? 'nav-link active' : 'nav-link'}
+                  onMouseEnter={(event) => showTooltip(label, event)}
+                  onMouseLeave={hideTooltip}
+                  onFocus={(event) => showTooltip(label, event)}
+                  onBlur={hideTooltip}
+                >
+                  <Icon size={17} strokeWidth={1.8} />
+                  {!compact && <span className="sidebar-label">{label}</span>}
+                  {!compact && href === '/chat' && <span className="nav-badge">{totalConversations || ''}</span>}
+                  {compact && href === '/chat' && <span className="nav-badge-compact">{totalConversations || ''}</span>}
+                </Link>
+              );
+            })}
+          </nav>
         )}
 
         {/* Bouton "Nouvelle conversation" réduit, près de la nav. */}
@@ -897,6 +819,28 @@ export default function WorkspaceShell({ children }: { children: ReactNode }) {
           {tooltip.text}
         </div>
       )}
+
+      {deleteTarget && (
+        <ConfirmDialog
+          open
+          variant="danger"
+          title="Supprimer la conversation"
+          message={`Supprimer définitivement « ${deleteTarget.title} » ? Cette action est irréversible.`}
+          confirmLabel="Supprimer"
+          cancelLabel="Annuler"
+          loading={busyId === deleteTarget.id}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => void confirmDelete()}
+        />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette
+          conversations={conversations.map((c) => ({ id: c.id, title: c.title }))}
+          onNewConversation={() => { setPaletteOpen(false); window.location.assign('/chat?new=1'); }}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -906,7 +850,6 @@ type ConversationCardProps = {
   agent: Agent | undefined;
   paletteEntry: AgentPalette;
   active: boolean;
-  preview: string;
   menuOpen: boolean;
   renaming: boolean;
   renameDraft: string;
@@ -929,7 +872,6 @@ function ConversationCard(props: ConversationCardProps) {
     agent,
     paletteEntry,
     active,
-    preview,
     menuOpen,
     renaming,
     renameDraft,
@@ -1000,11 +942,7 @@ function ConversationCard(props: ConversationCardProps) {
             <span className="meta-relative">{updatedRelative}</span>
           </span>
           <div className="conversation-card-details">
-            {preview ? (
-              <span className="conversation-card-preview">{truncate(preview, 110)}</span>
-            ) : (
-              <span className="conversation-card-preview placeholder">Aucun message pour l’instant</span>
-            )}
+            <span className="conversation-card-preview placeholder">{contextValue ? `${modelLabel} · ${contextValue}` : modelLabel}</span>
             <span className="conversation-card-footer">
               <span className="meta-model">{modelLabel}</span>
               {contextValue && (
