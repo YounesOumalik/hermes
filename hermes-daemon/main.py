@@ -11,6 +11,7 @@ Responsabilités :
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -18,11 +19,15 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import time
 import httpx
 from datetime import datetime
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -68,6 +73,8 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = ""
+    web_search_url: str = "https://html.duckduckgo.com/html/"
+    web_fetch_max_bytes: int = 2 * 1024 * 1024
 
 
 settings = Settings()
@@ -745,6 +752,196 @@ async def stop_telegram_bridge() -> None:
 # ---------------------------------------------------------------------------
 # Endpoints Tools (registre + exécution)
 # ---------------------------------------------------------------------------
+
+WEB_USER_AGENT = "HermesWorkspace/1.0 (+https://hermes.eaumalik.com)"
+WEB_MAX_REDIRECTS = 3
+WEB_MAX_TEXT_CHARS = 120_000
+BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "metadata.google.internal"}
+
+
+class _WebTextParser(HTMLParser):
+    """Transforme une page HTML en texte lisible sans exécuter son contenu."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self.parts: List[str] = []
+        self._in_title = False
+        self._ignored_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        tag = tag.lower()
+        if tag == "title":
+            self._in_title = True
+        if tag in {"script", "style", "noscript", "template", "svg"}:
+            self._ignored_depth += 1
+        elif not self._ignored_depth and tag in {"p", "div", "li", "br", "h1", "h2", "h3", "section", "article"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag == "title":
+            self._in_title = False
+        if tag in {"script", "style", "noscript", "template", "svg"} and self._ignored_depth:
+            self._ignored_depth -= 1
+        elif not self._ignored_depth and tag in {"p", "div", "li", "br", "h1", "h2", "h3", "section", "article"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title += f" {data}"
+        if not self._ignored_depth:
+            self.parts.append(data)
+
+
+class _SearchResultParser(HTMLParser):
+    """Parseur volontairement limité aux résultats DuckDuckGo publics."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: List[Dict[str, str]] = []
+        self._current: Optional[Dict[str, str]] = None
+        self._capture: Optional[str] = None
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        attr = dict(attrs)
+        classes = set((attr.get("class") or "").split())
+        if tag == "div" and "result__snippet" in classes and self._current:
+            self._capture = "snippet"
+            return
+        if tag != "a":
+            return
+        if "result__a" in classes:
+            if self._current and self._current.get("url"):
+                self.results.append(self._current)
+            self._current = {"title": "", "url": self._decode_result_url(attr.get("href") or ""), "snippet": ""}
+            self._capture = "title"
+        elif "result__url" in classes and self._current:
+            self._capture = "url"
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._capture in {"title", "url"}:
+            self._capture = None
+        elif tag == "div" and self._capture == "snippet":
+            self._capture = None
+
+    def handle_data(self, data: str) -> None:
+        if self._current and self._capture in {"title", "url"}:
+            self._current[self._capture] += data
+        elif self._current and self._capture == "snippet":
+            self._current["snippet"] += data
+
+    def close(self) -> None:
+        super().close()
+        if self._current and self._current.get("url"):
+            self.results.append(self._current)
+            self._current = None
+
+    @staticmethod
+    def _decode_result_url(raw_url: str) -> str:
+        parsed = urlparse(unescape(raw_url))
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        return unquote(target or raw_url)
+
+
+def _public_ip(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def _validate_public_url(url: str) -> str:
+    """Bloque les schémas dangereux et les cibles privées avant toute requête."""
+    candidate = str(url or "").strip()
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL publique HTTP/HTTPS obligatoire.")
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname in BLOCKED_HOSTNAMES:
+        raise ValueError("Cette destination est bloquée pour des raisons de sécurité.")
+    try:
+        direct_ip = ipaddress.ip_address(hostname)
+        addresses = [str(direct_ip)]
+    except ValueError:
+        try:
+            addresses = list({info[4][0] for info in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)})
+        except socket.gaierror as exc:
+            raise ValueError("Impossible de résoudre le domaine demandé.") from exc
+    if not addresses or not all(_public_ip(address) for address in addresses):
+        raise ValueError("Les adresses privées ou internes ne sont pas accessibles par Hermes.")
+    return candidate
+
+
+def _plain_text_from_html(raw_html: str) -> Tuple[str, str]:
+    parser = _WebTextParser()
+    parser.feed(raw_html)
+    parser.close()
+    text = re.sub(r"[ \t]+", " ", "".join(parser.parts))
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return re.sub(r"\s+", " ", parser.title).strip(), text[:WEB_MAX_TEXT_CHARS]
+
+
+async def _call_web_search(args: Dict[str, Any]) -> Dict[str, Any]:
+    query = re.sub(r"\s+", " ", str(args.get("query") or "").strip())[:240]
+    if len(query) < 2:
+        return {"error": "Une recherche d’au moins deux caractères est nécessaire."}
+    max_results = min(max(int(args.get("max_results") or 8), 1), 10)
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        response = await client.post(
+            settings.web_search_url,
+            data={"q": query, "kl": "wt-wt"},
+            headers={"User-Agent": WEB_USER_AGENT, "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"},
+        )
+    response.raise_for_status()
+    parser = _SearchResultParser()
+    parser.feed(response.text)
+    parser.close()
+    results = []
+    for item in parser.results[:max_results]:
+        results.append({
+            "title": re.sub(r"\s+", " ", unescape(item.get("title", ""))).strip(),
+            "url": item.get("url", "").strip(),
+            "snippet": re.sub(r"\s+", " ", unescape(item.get("snippet", ""))).strip(),
+        })
+    return {"query": query, "source": "DuckDuckGo", "results": results}
+
+
+async def _call_web_fetch(args: Dict[str, Any]) -> Dict[str, Any]:
+    current_url = _validate_public_url(str(args.get("url") or ""))
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
+        for _ in range(WEB_MAX_REDIRECTS + 1):
+            async with client.stream("GET", current_url, headers={"User-Agent": WEB_USER_AGENT, "Accept": "text/html,text/plain,application/json"}) as response:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError("Redirection sans destination.")
+                    current_url = _validate_public_url(str(httpx.URL(current_url).join(location)))
+                    continue
+                response.raise_for_status()
+                content_length = int(response.headers.get("content-length") or 0)
+                if content_length and content_length > settings.web_fetch_max_bytes:
+                    raise ValueError("La page est trop volumineuse pour une analyse sûre.")
+                chunks: List[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > settings.web_fetch_max_bytes:
+                        raise ValueError("La page dépasse la taille maximale autorisée.")
+                    chunks.append(chunk)
+                raw = b"".join(chunks)
+                content_type = response.headers.get("content-type", "").lower()
+                if "html" in content_type:
+                    title, text = _plain_text_from_html(raw.decode(response.encoding or "utf-8", errors="replace"))
+                elif "text/" in content_type or "json" in content_type or "xml" in content_type:
+                    title, text = "", raw.decode(response.encoding or "utf-8", errors="replace")[:WEB_MAX_TEXT_CHARS]
+                else:
+                    return {"url": current_url, "status_code": response.status_code, "content_type": content_type, "text": "Contenu non textuel non extrait par Hermes."}
+                return {"url": current_url, "status_code": response.status_code, "content_type": content_type, "title": title, "text": text}
+        raise ValueError("Trop de redirections.")
+
+
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "n8n_webhook": {
         "name": "n8n_webhook",
@@ -798,6 +995,44 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "operation": {"type": "string", "enum": ["health", "system", "disk", "services"]},
             },
             "required": ["operation"],
+        },
+    },
+    "web_search": {
+        "name": "web_search",
+        "description": "Recherche des informations récentes sur Internet et renvoie des sources avec liens",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Question ou sujet à rechercher sur Internet"},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 8},
+            },
+            "required": ["query"],
+        },
+    },
+    "web_fetch": {
+        "name": "web_fetch",
+        "description": "Lit une page web publique pour en extraire le contenu textuel et l’analyser",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL publique HTTP ou HTTPS"},
+            },
+            "required": ["url"],
+        },
+    },
+    "mcp_terminal": {
+        "name": "mcp_terminal",
+        "description": "Exécute une commande contrôlée dans le workspace Hermes pour diagnostiquer le projet et lancer des scripts autorisés",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "enum": ["ls", "find", "cat", "head", "tail", "grep", "rg", "df", "du", "ps", "python3", "node", "npm", "git", "curl", "wget", "bash", "sh"]},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "Arguments séparés, sans shell inline"},
+                "cwd": {"type": "string", "default": ".", "description": "Sous-dossier relatif à /workspace"},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120, "default": 30},
+                "confirmed": {"type": "boolean", "description": "Obligatoire pour scripts, réseau ou commandes potentiellement mutantes"},
+            },
+            "required": ["command"],
         },
     },
     "google_gmail": {
@@ -858,13 +1093,7 @@ async def call_tool(req: ToolCallRequest, _: bool = Depends(verify_token)):
     """Exécute un tool par son nom."""
     if req.tool_name not in TOOL_REGISTRY:
         raise HTTPException(status_code=404, detail=f"Tool inconnu: {req.tool_name}")
-
-    if req.tool_name == "n8n_webhook":
-        return await _call_n8n_webhook(req.arguments)
-    elif req.tool_name.startswith("mcp_"):
-        return await _call_mcp(req.tool_name, req.arguments)
-    else:
-        raise HTTPException(status_code=400, detail="Tool non exécutable directement")
+    return await _execute_tool(req.tool_name, req.arguments)
 
 
 async def _call_n8n_webhook(args: Dict[str, Any]):
@@ -959,6 +1188,10 @@ async def _execute_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, 
             return await _call_mcp(tool_name, arguments)
         if tool_name == "server_diagnostics":
             return await _call_server_diagnostics(arguments)
+        if tool_name == "web_search":
+            return await _call_web_search(arguments)
+        if tool_name == "web_fetch":
+            return await _call_web_fetch(arguments)
         if tool_name == "google_gmail":
             return await _call_google_gmail(arguments)
         if tool_name == "google_calendar":

@@ -60,6 +60,7 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-https://hermes.eaumalik.com/api/hermes/connectors/google/callback}
+      - HERMES_WEB_SEARCH_URL=${HERMES_WEB_SEARCH_URL:-https://html.duckduckgo.com/html/}
       - POSTGRES_HOST=host.docker.internal
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-hermes}

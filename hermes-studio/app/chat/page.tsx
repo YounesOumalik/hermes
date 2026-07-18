@@ -11,8 +11,8 @@ type ProviderStatus = { minimax_configured: boolean; model: string; mcp_ready: b
 type ChatResult = { content: string; model: string; agent_name?: string | null; reasoning_details?: ReasoningDetail[] | null };
 type ConversationSettingsSnapshot = { model: string; tools: string[]; contextTokens: number };
 
-const corePrompt = 'Tu es un orchestrateur précis. Décompose les demandes complexes et utilise les outils uniquement lorsque cela apporte une valeur claire.';
-const coreTools = ['mcp_filesystem', 'mcp_github', 'n8n_webhook', 'server_diagnostics'];
+const corePrompt = 'Tu es un orchestrateur précis. Décompose les demandes complexes, utilise web_search/web_fetch pour les informations récentes et mcp_terminal pour diagnostiquer le workspace. N’exécute jamais une action sensible sans demander une confirmation explicite.';
+const coreTools = ['mcp_filesystem', 'mcp_github', 'mcp_terminal', 'n8n_webhook', 'server_diagnostics', 'web_search', 'web_fetch'];
 const modelOptions = ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.1', 'MiniMax-M2'];
 const contextOptions = [
   { value: 128_000, label: '128K' },
