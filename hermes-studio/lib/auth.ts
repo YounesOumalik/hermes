@@ -14,7 +14,7 @@ function fromBase64Url(value: string) {
 }
 
 async function getKey() {
-  const secret = process.env.HERMES_SESSION_SECRET || process.env.HERMES_JWT_SECRET;
+  const secret = process.env.HERMES_SESSION_SECRET || process.env.HERMES_JWT_SECRET || (process.env.NODE_ENV !== 'production' ? 'dev-secret-key-1234567890123456' : null);
   if (!secret) return null;
   return crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }

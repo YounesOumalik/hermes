@@ -1,0 +1,7 @@
+# Hermes Studio - SEO configuration
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /login
+
+Sitemap: /sitemap.xml

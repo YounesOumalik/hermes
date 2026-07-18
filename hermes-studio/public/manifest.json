@@ -1,0 +1,70 @@
+{
+  "name": "Hermes Studio",
+  "short_name": "Hermes",
+  "description": "Interface d'orchestration multi-agents Hermes",
+  "start_url": "/chat",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0a0f",
+  "theme_color": "#8b5cf6",
+  "lang": "fr",
+  "dir": "ltr",
+  "categories": ["productivity", "utilities", "developer"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Nouveau chat",
+      "short_name": "Chat",
+      "description": "Démarrer une nouvelle conversation",
+      "url": "/chat",
+      "icons": [
+        { "src": "/icons/icon-192.png", "sizes": "192x192" }
+      ]
+    },
+    {
+      "name": "Agents",
+      "short_name": "Agents",
+      "description": "Gérer mes agents personnalisés",
+      "url": "/agents",
+      "icons": [
+        { "src": "/icons/icon-192.png", "sizes": "192x192" }
+      ]
+    },
+    {
+      "name": "Outils",
+      "short_name": "Outils",
+      "description": "Explorer les outils MCP",
+      "url": "/tools",
+      "icons": [
+        { "src": "/icons/icon-192.png", "sizes": "192x192" }
+      ]
+    }
+  ],
+  "prefer_related_applications": false
+}

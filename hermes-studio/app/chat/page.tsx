@@ -1,15 +1,16 @@
 'use client';
 
-import { ArrowUp, Bot, Check, ChevronDown, Copy, Paperclip, Plus, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Square, Terminal, UserRound, WandSparkles, Wrench, X } from 'lucide-react';
-import type { ComponentType } from 'react';
+import { Sparkles, Terminal, Bot, WandSparkles, ChevronDown, X, Save } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Agent, Attachment, Conversation, ConversationMessage, Tool, api } from '../lib/api';
 import Markdown from './components/Markdown';
 import { useChatStream } from './useChatStream';
 import ToolCallCard from './components/ToolCallCard';
 import ReasoningBlock from './components/ReasoningBlock';
+import MessageBubble from './components/MessageBubble';
+import Composer from './components/Composer';
+import ChatHeader from './components/ChatHeader';
 
-type ReasoningDetail = Record<string, unknown>;
 type ChatMessage = ConversationMessage;
 type ProviderStatus = { minimax_configured: boolean; model: string; mcp_ready: boolean };
 type ConversationSettingsSnapshot = { model: string; tools: string[]; contextTokens: number };
@@ -30,10 +31,6 @@ const suggestions = [
   { icon: Sparkles, label: 'Explique-moi l’architecture du workspace', hint: 'Doc' },
   { icon: WandSparkles, label: 'Planifie mon sprint de la semaine', hint: 'Plan' },
 ];
-
-function contextLabel(tokens: number) {
-  return tokens >= 1_000_000 ? '1M' : `${Math.round(tokens / 1000)}K`;
-}
 
 function defaultContext(model?: string | null) {
   return model?.toLowerCase().includes('m3') ? 1_000_000 : 200_000;
@@ -63,9 +60,7 @@ export default function ChatPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSnapshot, setSettingsSnapshot] = useState<ConversationSettingsSnapshot | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
-  const [showContextPanel, setShowContextPanel] = useState<boolean>(true);
-  const [showToolsSection, setShowToolsSection] = useState<boolean>(true);
-  const [showInstructionsSection, setShowInstructionsSection] = useState<boolean>(true);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesListRef = useRef<HTMLDivElement>(null);
@@ -75,9 +70,8 @@ export default function ChatPage() {
   const [stopping, setStopping] = useState(false);
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
 
-  const { streamState, startStream, stopStream, resetStream } = useChatStream({
+  const { streamState, startStream, stopStream } = useChatStream({
     onDone: (content, model) => {
-      // Persist la conversation complète après le stream
       if (pendingUserMessage) {
         const completed = [...messages, pendingUserMessage, { role: 'assistant' as const, content, time: 'maintenant' }];
         setMessages(completed);
@@ -99,39 +93,13 @@ export default function ChatPage() {
   const isLoading = streamState.isStreaming;
   const activeAgent = agents.find((agent) => agent.name === selectedAgentName);
   const activeName = activeAgent?.name || 'Hermes Core';
-  const activePrompt = activeAgent?.system_prompt || corePrompt;
   const activeModel = selectedModel || activeAgent?.model || providerStatus?.model || 'Modèle à configurer';
-  const providerLabel = providerStatus?.minimax_configured ? 'MiniMax connecté' : 'MiniMax à configurer';
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (window.localStorage.getItem('hermes-context-panel-hidden') === 'true') setShowContextPanel(false);
-    if (window.localStorage.getItem('hermes-context-tools-hidden') === 'true') setShowToolsSection(false);
-    if (window.localStorage.getItem('hermes-context-instructions-hidden') === 'true') setShowInstructionsSection(false);
-  }, []);
-
-useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem('hermes-context-panel-hidden', String(!showContextPanel));
-  }, [showContextPanel]);
-
-useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem('hermes-context-tools-hidden', String(!showToolsSection));
-  }, [showToolsSection]);
-
-useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem('hermes-context-instructions-hidden', String(!showInstructionsSection));
-  }, [showInstructionsSection]);
-
-  // Auto-scroll : on descend en bas si l'utilisateur est "piné" en bas.
   useEffect(() => {
     if (!isPinnedToBottom) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages, isLoading, isPinnedToBottom]);
+  }, [messages, isLoading, isPinnedToBottom, streamState.content]);
 
-  // Auto-grow du composer : ajuste la hauteur en fonction du contenu.
   const resizeComposer = useCallback(() => {
     const textarea = composerRef.current;
     if (!textarea) return;
@@ -144,7 +112,7 @@ useEffect(() => {
     resizeComposer();
   }, [input, resizeComposer]);
 
-useEffect(() => {
+  useEffect(() => {
     let cancelled = false;
     async function initialise() {
       const params = new URLSearchParams(window.location.search);
@@ -169,8 +137,6 @@ useEffect(() => {
           applyConversation(conversation);
         } else {
           const agent = loadedAgents.find((item) => item.name === requestedAgent);
-          // Réutiliser la dernière conversation vide (< 1 h, sans message utilisateur)
-          // plutôt que d'en créer une nouvelle à chaque visite de /chat.
           const existing = await api.get<{ conversations: Conversation[] }>('api/conversations');
           if (cancelled) return;
           const recent = (existing.conversations || []).find((conv) => {
@@ -386,160 +352,167 @@ useEffect(() => {
     window.setTimeout(() => setCopied(null), 1500);
   }
 
-  return <div className="chat-layout page">
-    <header className="chat-header">
-      <div className="chat-title"><span className="agent-avatar"><Sparkles size={16} /></span><div><div className="eyebrow">CONVERSATION ACTIVE</div><label className="agent-picker"><span className="sr-only">Agent actif</span><select value={selectedAgentName} onChange={(event) => void chooseAgent(event.target.value)}><option value="">Hermes Core</option>{agents.map((agent) => <option key={agent.name} value={agent.name}>{agent.name}</option>)}</select><ChevronDown size={17} /></label></div></div>
-      <div className="chat-header-actions"><button className="ghost-button" onClick={openConversationSettings}><Settings2 size={16} /> Conversation</button><button className="icon-button" onClick={() => void createNewConversation()} aria-label="Nouvelle conversation"><Plus size={18} /></button></div>
-    </header>
-    <div className="chat-body">
-      <section className="messages-column">
-        <div className="context-strip"><span><span className={`status-dot ${providerStatus?.minimax_configured ? 'online' : ''}`} /> {providerLabel}</span><span>{activeModel}</span><span>{contextLabel(contextTokens)} contexte</span></div>
-        <div
-          className="message-list"
-          ref={messagesListRef}
-          onScroll={(event) => {
-            const el = event.currentTarget;
-            const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-            const nearBottom = distanceFromBottom < 120;
-            setIsPinnedToBottom(nearBottom);
-            setShowJumpToBottom(!nearBottom && messages.length > 2);
-          }}
-        >
-          {initialising && <div className="loading-state">Chargement de la conversation…</div>}
-          {!initialising && messages.length === 0 && (
-            <div className="chat-empty-state">
-              <span className="empty-mark"><Sparkles size={24} /></span>
-              <h2>Que voulez-vous construire ?</h2>
-              <p>Hermes · {activeName} · {activeModel}</p>
-              <div className="empty-suggestions">
-                {suggestions.map((s) => (
-                  <button key={s.label} type="button" className="empty-suggestion" onClick={() => { setInput(s.label); composerRef.current?.focus(); }}>
-                    <span className="empty-suggestion-icon"><s.icon size={15} /></span>
-                    <span><strong>{s.label}</strong><small>{s.hint}</small></span>
-                  </button>
+  return (
+    <div className="chat-layout">
+      <ChatHeader 
+        agents={agents}
+        selectedAgentName={selectedAgentName}
+        onChooseAgent={(name) => void chooseAgent(name)}
+        onOpenSettings={openConversationSettings}
+        onNewConversation={() => void createNewConversation()}
+      />
+      
+      <div className="chat-body">
+        <section className="messages-column">
+          <div
+            className="message-list"
+            ref={messagesListRef}
+            onScroll={(event) => {
+              const el = event.currentTarget;
+              const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+              const nearBottom = distanceFromBottom < 120;
+              setIsPinnedToBottom(nearBottom);
+              setShowJumpToBottom(!nearBottom && messages.length > 2);
+            }}
+          >
+            {initialising && <div className="loading-state">Chargement de la conversation…</div>}
+            
+            {!initialising && messages.length === 0 && (
+              <div className="chat-empty-state">
+                <span className="empty-mark"><Sparkles size={24} /></span>
+                <h2>Que voulez-vous construire ?</h2>
+                <div className="empty-suggestions">
+                  {suggestions.map((s) => (
+                    <button key={s.label} type="button" className="empty-suggestion" onClick={() => { setInput(s.label); composerRef.current?.focus(); }}>
+                      <span className="empty-suggestion-icon"><s.icon size={15} /></span>
+                      <span><strong>{s.label}</strong><small>{s.hint}</small></span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {messages.map((message, index) => (
+              <MessageBubble 
+                key={`${message.time}-${index}`} 
+                message={message} 
+                index={index} 
+                onCopy={copyMessage} 
+                onRegenerate={regenerate} 
+                copied={copied === index} 
+              />
+            ))}
+            
+            {isLoading && (
+              <div className="message assistant-message">
+                <span className="message-avatar hermes-avatar"><Sparkles size={15} /></span>
+                <div className="message-content">
+                  <div className="message-meta"><strong>{activeName}</strong><span>{stopping ? 'arrêt en cours…' : 'répond'}</span></div>
+                  {streamState.reasoning.length > 0 && <ReasoningBlock details={streamState.reasoning} />}
+                  {streamState.tools.map((t, i) => <ToolCallCard key={i} tool={t.tool} status={t.status} args={t.args} result={t.result} />)}
+                  {streamState.content ? (
+                    <div className="message-text"><Markdown>{streamState.content}</Markdown></div>
+                  ) : (
+                    <div className="thinking"><span /><span /><span /></div>
+                  )}
+                  {streamState.isStreaming && <span className="streaming-cursor" aria-hidden="true" />}
+                </div>
+              </div>
+            )}
+            
+            <div ref={messagesEndRef} className="messages-end-spacer" />
+          </div>
+          
+          {showJumpToBottom && (
+            <button
+              type="button"
+              className="jump-to-bottom"
+              aria-label="Aller en bas"
+              onClick={() => {
+                setIsPinnedToBottom(true);
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+              }}
+            >
+              <ChevronDown size={16} />
+            </button>
+          )}
+          
+          <Composer 
+            input={input}
+            setInput={setInput}
+            isLoading={isLoading}
+            canSend={canSend}
+            onSend={() => void sendMessage()}
+            onStop={stopGeneration}
+            composerRef={composerRef}
+            fileInputRef={fileInputRef}
+            pendingAttachments={pendingAttachments}
+            uploading={uploading}
+            uploadError={uploadError}
+            onUpload={(files) => void uploadFiles(files)}
+            onRemoveAttachment={removePendingAttachment}
+            activeName={activeName}
+          />
+        </section>
+      </div>
+
+      {/* Settings Modal */}
+      {settingsOpen && (
+        <div className="modal-backdrop" onClick={cancelConversationSettings}>
+          <div className="modal modal-wide conversation-settings" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-heading">
+              <div>
+                <div className="eyebrow">PARAMÈTRES DE LA CONVERSATION</div>
+                <h2>Contrôler le contexte</h2>
+              </div>
+              <button className="icon-button" onClick={cancelConversationSettings} aria-label="Fermer"><X size={18} /></button>
+            </div>
+            
+            <div className="conversation-config-grid">
+              <label>
+                Modèle
+                <input list="minimax-model-options" value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} placeholder={activeAgent?.model || providerStatus?.model || 'MiniMax-M3'} />
+                <small>Vide = modèle de l’agent, puis modèle global.</small>
+                <datalist id="minimax-model-options">
+                  {modelOptions.map((model) => <option value={model} key={model} />)}
+                </datalist>
+              </label>
+              <label>
+                Fenêtre de contexte
+                <select value={contextTokens} onChange={(event) => setContextTokens(Number(event.target.value))}>
+                  {contextOptions.map((option) => <option value={option.value} key={option.value}>{option.label} tokens</option>)}
+                </select>
+                <small>1M est disponible selon votre accès.</small>
+              </label>
+            </div>
+            
+            <div className="conversation-tools">
+              <div className="tool-picker-heading">
+                <div>
+                  <strong>Outils de cette conversation</strong>
+                  <small>Ces outils seront indiqués à Hermes pour cette session uniquement.</small>
+                </div>
+                <span className="count-badge">{selectedTools.length}</span>
+              </div>
+              <div className="tool-picker-grid">
+                {tools.map((tool) => (
+                  <label className={`tool-option ${selectedTools.includes(tool.name) ? 'selected' : ''}`} key={tool.name}>
+                    <input type="checkbox" checked={selectedTools.includes(tool.name)} onChange={() => toggleTool(tool.name)} />
+                    <span><strong>{tool.name}</strong><small>{tool.description}</small></span>
+                  </label>
                 ))}
               </div>
             </div>
-          )}
-          {messages.map((message, index) => <Message key={`${message.time}-${index}`} message={message} index={index} onCopy={copyMessage} onRegenerate={regenerate} copied={copied === index} />)}
-          {isLoading && (
-            <div className="message assistant-message">
-              <span className="message-avatar hermes-avatar"><Sparkles size={15} /></span>
-              <div className="message-content">
-                <div className="message-meta"><strong>{activeName}</strong><span>{stopping ? 'arrêt en cours…' : 'répond'}</span></div>
-                {streamState.reasoning.length > 0 && <ReasoningBlock details={streamState.reasoning} />}
-                {streamState.tools.map((t, i) => <ToolCallCard key={i} tool={t.tool} status={t.status} args={t.args} result={t.result} />)}
-                {streamState.content ? (
-                  <div className="message-text"><Markdown>{streamState.content}</Markdown></div>
-                ) : (
-                  <div className="thinking"><span /><span /><span /></div>
-                )}
-                {streamState.isStreaming && <span className="streaming-cursor" aria-hidden="true" />}
-              </div>
+            
+            <div className="modal-actions">
+              <button className="button button-secondary" onClick={cancelConversationSettings}>Annuler</button>
+              <button className="button button-primary" onClick={() => void saveConversationSettings()} disabled={savingSettings}>
+                {savingSettings ? 'Enregistrement…' : <><Save size={15} /> Enregistrer</>}
+              </button>
             </div>
-          )}
-          <div ref={messagesEndRef} />
+          </div>
         </div>
-        {showJumpToBottom && (
-          <button
-            type="button"
-            className="jump-to-bottom"
-            aria-label="Aller en bas"
-            onClick={() => {
-              setIsPinnedToBottom(true);
-              messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-            }}
-          >
-            <ChevronDown size={16} />
-          </button>
-        )}
-        <div className="composer-wrap"><form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files); }}><input ref={fileInputRef} className="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,.xml,.html,.css,.js,.ts,.py,.sql,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(event) => { if (event.target.files) void uploadFiles(event.target.files); }} /><div className="attachment-strip">{pendingAttachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /><span>{attachment.name}</span><button type="button" onClick={() => removePendingAttachment(attachment.id)} aria-label={`Supprimer ${attachment.name}`}><X size={13} /></button></span>)}{uploading && <span className="attachment-uploading">Téléversement…</span>}{uploadError && <span className="attachment-error">{uploadError}</span>}</div><textarea ref={composerRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={`Écrivez une instruction à ${activeName}…`} rows={2} aria-label="Message à Hermes" /><div className="composer-toolbar"><button type="button" className="icon-button" aria-label="Joindre un fichier" title="Joindre un fichier ou déposer ici" onClick={() => fileInputRef.current?.click()} disabled={uploading}><Paperclip size={17} /></button><span className="composer-hint">Entrée pour envoyer · ⇧ Entrée pour une nouvelle ligne</span><button className={`send-button ${canSend ? 'ready' : ''}`} type={isLoading ? 'button' : 'submit'} onClick={isLoading ? stopGeneration : undefined} disabled={!canSend && !isLoading} aria-label={isLoading ? 'Arrêter' : 'Envoyer'}>{isLoading ? <Square size={15} fill="currentColor" /> : <ArrowUp size={17} />}</button></div></form><p className="composer-disclaimer">Hermes peut faire des erreurs. Vérifiez les actions importantes.</p></div>
-      </section>
-      <aside className={`context-panel ${showContextPanel ? '' : 'is-hidden'}`}>
-        {showContextPanel ? (
-          <>
-            <div className="context-heading">
-              <div>
-                <div className="eyebrow">CONTEXTE</div>
-                <h3>{conversationTitle}</h3>
-              </div>
-              <div className="context-heading-actions">
-                <button className="icon-button" onClick={openConversationSettings} aria-label="Paramètres de la conversation" title="Paramètres de la conversation"><SlidersHorizontal size={16} /></button>
-                <button className="icon-button" onClick={() => setShowContextPanel(false)} aria-label="Masquer le panneau de contexte" title="Masquer le panneau de contexte"><X size={15} /></button>
-              </div>
-            </div>
-            <div className="context-agent">
-              <span className="large-agent-avatar"><Sparkles size={20} /></span>
-              <div>
-                <strong>{activeName}</strong>
-                <small>{activeModel} · {contextLabel(contextTokens)}</small>
-              </div>
-              <Check size={16} className="text-success" />
-            </div>
-            {showToolsSection && (
-              <div className="context-section">
-                <div className="context-section-title">
-                  <span>Outils actifs</span>
-                  <div className="context-section-actions">
-                    <span className="count-badge">{selectedTools.length}</span>
-                    <button className="context-section-toggle" onClick={() => setShowToolsSection(false)} aria-label="Masquer la liste des outils" title="Masquer les outils"><X size={11} /></button>
-                  </div>
-                </div>
-                {selectedTools.map((tool, index) => <ContextTool icon={[Terminal, GitHubMark, WandSparkles][index % 3]} name={tool} status="Prêt" key={tool} />)}
-              </div>
-            )}
-            {!showToolsSection && (
-              <button type="button" className="context-restore" onClick={() => setShowToolsSection(true)}>
-                <Wrench size={12} /> Voir les outils ({selectedTools.length})
-              </button>
-            )}
-            {showInstructionsSection && (
-              <div className="context-section">
-                <div className="context-section-title">
-                  <span>Instructions</span>
-                  <div className="context-section-actions">
-                    <a className="text-link" href="/agents">Modifier</a>
-                    <button className="context-section-toggle" onClick={() => setShowInstructionsSection(false)} aria-label="Masquer les instructions" title="Masquer les instructions"><X size={11} /></button>
-                  </div>
-                </div>
-                <p className="context-note">{activePrompt}</p>
-              </div>
-            )}
-            {!showInstructionsSection && (
-              <button type="button" className="context-restore" onClick={() => setShowInstructionsSection(true)}>
-                <Sparkles size={12} /> Voir les instructions
-              </button>
-            )}
-            <div className="context-footer"><span className="status-dot online" /> Conversation synchronisée</div>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="context-panel-reveal"
-            onClick={() => setShowContextPanel(true)}
-            aria-label="Afficher le panneau de contexte"
-            title="Afficher le panneau de contexte"
-          >
-            <span className="context-panel-reveal-mark"><Sparkles size={15} /></span>
-            <span className="context-panel-reveal-label">Contexte</span>
-          </button>
-        )}
-      </aside>
+      )}
     </div>
-    {settingsOpen && <div className="modal-backdrop" onClick={cancelConversationSettings}><div className="modal modal-wide conversation-settings" onClick={(event) => event.stopPropagation()}><div className="modal-heading"><div><div className="eyebrow">PARAMÈTRES DE LA CONVERSATION</div><h2>Contrôler le contexte</h2></div><button className="icon-button" onClick={cancelConversationSettings} aria-label="Fermer"><X size={18} /></button></div><div className="conversation-config-grid"><label>Modèle MiniMax<input list="minimax-model-options" value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} placeholder={activeAgent?.model || providerStatus?.model || 'MiniMax-M3'} /><small>Vide = modèle de l’agent, puis modèle global.</small><datalist id="minimax-model-options">{modelOptions.map((model) => <option value={model} key={model} />)}</datalist></label><label>Fenêtre de contexte<select value={contextTokens} onChange={(event) => setContextTokens(Number(event.target.value))}>{contextOptions.map((option) => <option value={option.value} key={option.value}>{option.label} tokens</option>)}</select><small>1M est disponible selon votre accès MiniMax M3.</small></label></div><div className="conversation-tools"><div className="tool-picker-heading"><div><strong>Outils de cette conversation</strong><small>Ces outils seront indiqués à Hermes pour cette session uniquement.</small></div><span className="count-badge">{selectedTools.length}</span></div><div className="tool-picker-grid">{tools.map((tool) => <label className={`tool-option ${selectedTools.includes(tool.name) ? 'selected' : ''}`} key={tool.name}><input type="checkbox" checked={selectedTools.includes(tool.name)} onChange={() => toggleTool(tool.name)} /><span><strong>{tool.name}</strong><small>{tool.description}</small></span></label>)}</div></div><div className="modal-actions"><button className="button button-secondary" onClick={cancelConversationSettings}>Annuler</button><button className="button button-primary" onClick={() => void saveConversationSettings()} disabled={savingSettings}>{savingSettings ? 'Enregistrement…' : <><Save size={15} /> Enregistrer</>}</button></div></div></div>}
-  </div>;
-}
-
-function Message({ message, index, onCopy, onRegenerate, copied }: { message: ChatMessage; index: number; onCopy: (index: number, content: string) => void; onRegenerate: () => void; copied: boolean }) {
-  const user = message.role === 'user';
-  const isInterrupted = message.time === 'interrompu';
-  return <div className={`message ${user ? 'user-message' : 'assistant-message'} ${isInterrupted ? 'is-interrupted' : ''}`}><span className={`message-avatar ${user ? 'user-avatar' : 'hermes-avatar'}`}>{user ? <UserRound size={15} /> : <Sparkles size={15} />}</span><div className="message-content"><div className="message-meta"><strong>{user ? 'Vous' : 'Hermes'}</strong><span>{message.time}</span></div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => <span className="attachment-chip" key={attachment.id}><Paperclip size={13} /> {attachment.name}</span>)}</div> : null}<div className="message-text">{user ? message.content : <Markdown>{message.content}</Markdown>}</div>{!user && !isInterrupted && <div className="message-actions"><button onClick={() => onCopy(index, message.content)}><Copy size={13} /> {copied ? 'Copié' : 'Copier'}</button><button onClick={onRegenerate}><RotateCcw size={13} /> Régénérer</button></div>}</div></div>;
-}
-
-function ContextTool({ icon: Icon, name, status }: { icon: ComponentType<{ size?: string | number }>; name: string; status: string }) {
-  return <div className="context-tool"><span className="tool-mini-icon"><Icon size={14} /></span><span><strong>{name}</strong><small>{status}</small></span><span className="status-dot online" /></div>;
-}
-
-function GitHubMark({ size = 14 }: { size?: string | number }) {
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.3-.4 6.8-1.6 6.8-7A5.5 5.5 0 0 0 19.3 4 5.1 5.1 0 0 0 19.2.4S18 0 15 2.1a13.4 13.4 0 0 0-6 0C6 .1 4.8.4 4.8.4A5.1 5.1 0 0 0 4.7 4a5.5 5.5 0 0 0-1.5 3.8c0 5.4 3.5 6.6 6.8 7A4.8 4.8 0 0 0 9 18v4" /><path d="M9 18c-4.5 2-5-2-7-2" /></svg>;
+  );
 }

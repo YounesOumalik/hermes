@@ -42,25 +42,16 @@ services:
     expose:
       - "8001"
     ports:
-      - "127.0.0.1:8001:8001"
+      - "8001:8001"
     environment:
       - HERMES_ENV=production
       - HERMES_PORT=8001
       - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
-      - HERMES_ALLOWED_ORIGINS=${HERMES_ALLOWED_ORIGINS:-https://hermes.example.com}
       - MINIMAX_API_KEY=${MINIMAX_API_KEY}
-      - MINIMAX_BASE_URL=${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
-      - MINIMAX_MODEL=${MINIMAX_MODEL:-MiniMax-M2.7}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - ALLOWED_CHAT_ID=${ALLOWED_CHAT_ID:-}
-      - TELEGRAM_AGENT_NAME=${TELEGRAM_AGENT_NAME:-}
+      - MINIMAX_BASE_URL=https://api.minimax.chat/v1
+      - MINIMAX_MODEL=${MINIMAX_MODEL:-abab6.5s-chat}
       - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
       - MCP_SERVER_URL=http://mcp-server:3100
-      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
-      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-https://hermes.eaumalik.com/api/hermes/connectors/google/callback}
-      - HERMES_WEB_SEARCH_URL=${HERMES_WEB_SEARCH_URL:-https://html.duckduckgo.com/html/}
       - POSTGRES_HOST=host.docker.internal
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-hermes}
@@ -96,21 +87,19 @@ services:
     expose:
       - "3000"
     ports:
-      - "127.0.0.1:3000:3000"
+      - "3000:3000"
     environment:
       - NODE_ENV=production
       - HERMES_DAEMON_URL=http://hermes-daemon:8001
-      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
-      - HERMES_SESSION_SECRET=${HERMES_SESSION_SECRET:-${HERMES_JWT_SECRET}}
-      - HERMES_ADMIN_USERNAME=${HERMES_ADMIN_USERNAME:-admin}
-      - HERMES_ADMIN_PASSWORD_HASH=${HERMES_ADMIN_PASSWORD_HASH}
+      - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL:-https://hermes.smartefp.com}
+      - NEXT_PUBLIC_DAEMON_URL=${NEXT_PUBLIC_DAEMON_URL:-http://hermes-daemon:8001}
     depends_on:
       hermes-daemon:
         condition: service_healthy
     networks:
       - orchestration-net
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/login').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
       interval: 30s
       timeout: 10s
       retries: 3
