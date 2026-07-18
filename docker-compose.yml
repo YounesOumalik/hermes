@@ -93,6 +93,13 @@ services:
       - HERMES_DAEMON_URL=http://hermes-daemon:8001
       - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL:-https://hermes.smartefp.com}
       - NEXT_PUBLIC_DAEMON_URL=${NEXT_PUBLIC_DAEMON_URL:-http://hermes-daemon:8001}
+      - HERMES_ADMIN_USERNAME=${HERMES_ADMIN_USERNAME:-admin}
+      - HERMES_ADMIN_PASSWORD_HASH=${HERMES_ADMIN_PASSWORD_HASH}
+      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
+      - HERMES_SESSION_SECRET=${HERMES_SESSION_SECRET}
+      - HERMES_ALLOWED_ORIGINS=${HERMES_ALLOWED_ORIGINS:-https://hermes.eaumalik.com}
+    env_file:
+      - /opt/hermes-orchestration/.env
     depends_on:
       hermes-daemon:
         condition: service_healthy
