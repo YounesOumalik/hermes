@@ -27,6 +27,7 @@ const CORE_URL = (process.env.HERMES_CORE_URL || 'http://hermes-core:8002').repl
 const ROUTES: Record<string, string> = {
   '/v1/': LLM_PROXY_URL,
   '/api/llm/': LLM_PROXY_URL,
+  '/api/chat/': CORE_URL,
   '/api/orchestrator/': CORE_URL,
   '/api/conversations/': CORE_URL,
   '/api/agents/': CORE_URL,
@@ -37,6 +38,18 @@ const ROUTES: Record<string, string> = {
   '/api/events/': CORE_URL,
   '/api/system/': CORE_URL,
 };
+
+function decodeSessionUsername(cookieValue: string): string | null {
+  try {
+    const [encoded] = cookieValue.split('.');
+    if (!encoded) return null;
+    const padded = encoded.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((encoded.length + 3) % 4);
+    const decoded = Buffer.from(padded, 'base64').toString('utf8');
+    return decoded || null;
+  } catch {
+    return null;
+  }
+}
 
 function pickUpstream(path: string): string {
   for (const prefix of Object.keys(ROUTES).sort((a, b) => b.length - a.length)) {
@@ -65,11 +78,8 @@ async function forward(request: NextRequest, path: string[]) {
       const valid = await verifySession(sessionCookie);
       if (valid) {
         // Décode le username depuis le payload (format : base64url(username).expiresAt.signature)
-        const [encodedUsername] = sessionCookie.split('.');
-        if (encodedUsername) {
-          // base64url decode
-          const padded = encodedUsername.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((encodedUsername.length + 3) % 4);
-          const username = Buffer.from(padded, 'base64').toString('utf8');
+        const username = decodeSessionUsername(sessionCookie);
+        if (username) {
           headers.set('X-Hermes-User-Id', username);
           headers.set('X-Hermes-User-Roles', 'default');
         }
