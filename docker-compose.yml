@@ -175,8 +175,8 @@ services:
     expose:
       - "8002"
     # Pas de binding externe — atteint uniquement via le BFF (orchestration-net)
-    env_file:
-      - /opt/hermes-orchestration/.env
+    # env vars lues depuis /opt/hermes-orchestration/.env via le deploy script
+    # (le webhook deploy fait `set -a && source` avant `docker compose up`)
     environment:
       - HERMES_ENV=production
       - HERMES_CORE_PORT=8002
@@ -187,6 +187,8 @@ services:
       - MCP_SERVER_URL=http://mcp-server:3100
       - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-}
       - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
+    volumes:
+      - /opt/hermes-orchestration/.env:/opt/hermes-orchestration/.env:ro
     volumes:
       - hermes_core_db:/var/lib/hermes-core
       - ./hermes-core:/app
