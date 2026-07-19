@@ -35,6 +35,7 @@ export const api = {
 };
 
 export type Agent = {
+  id?: number;
   name: string;
   system_prompt: string;
   description?: string;
@@ -42,6 +43,8 @@ export type Agent = {
   temperature?: number;
   max_tokens?: number;
   tools: string[];
+  is_preset?: boolean;
+  created_at?: string | null;
 };
 
 export type ConversationMessage = {
