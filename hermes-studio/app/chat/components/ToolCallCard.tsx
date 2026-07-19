@@ -3,11 +3,16 @@
 import { useState, type MouseEvent } from 'react';
 import { ChevronDown, Terminal, Wrench, Globe, Zap } from 'lucide-react';
 
+type ToolStatus = 'running' | 'success' | 'error' | 'awaiting_approval' | 'rejected';
+
 type ToolCallCardProps = {
   tool: string;
-  status: 'running' | 'success' | 'error';
+  status: ToolStatus;
   args?: Record<string, unknown>;
   result?: Record<string, unknown>;
+  approval_id?: number;
+  onApprove?: (approvalId: number) => void;
+  onReject?: (approvalId: number) => void;
 };
 
 function toolIcon(tool: string) {
@@ -17,7 +22,23 @@ function toolIcon(tool: string) {
   return Wrench;
 }
 
-export default function ToolCallCard({ tool, status, args, result }: ToolCallCardProps) {
+const STATUS_LABEL: Record<ToolStatus, string> = {
+  running: 'En cours',
+  success: 'OK',
+  error: 'Erreur',
+  awaiting_approval: 'Approbation requise',
+  rejected: 'Rejeté',
+};
+
+const STATUS_ICON: Record<ToolStatus, string> = {
+  running: '✦',
+  success: '✓',
+  error: '✗',
+  awaiting_approval: '⚠',
+  rejected: '⊘',
+};
+
+export default function ToolCallCard({ tool, status, args, result, approval_id, onApprove, onReject }: ToolCallCardProps) {
   const [open, setOpen] = useState(false);
 
   function toggle(event: MouseEvent<HTMLButtonElement>) {
@@ -26,14 +47,33 @@ export default function ToolCallCard({ tool, status, args, result }: ToolCallCar
   }
 
   const Icon = toolIcon(tool);
-  const statusIcon = status === 'running' ? '✦' : status === 'success' ? '✓' : '✗';
 
   return (
-    <div className={`tool-call-card ${status === 'running' ? 'is-running' : ''}`}>
+    <div className={`tool-call-card ${status === 'running' ? 'is-running' : ''} tool-call-${status}`}>
       <div className="tool-call-header">
         <span className="tool-call-icon"><Icon size={13} /></span>
         <span className="tool-call-name">{tool}</span>
-        <span className={`tool-call-status tool-call-status-${status}`}>{statusIcon} {status === 'running' ? 'En cours' : status === 'success' ? 'OK' : 'Erreur'}</span>
+        <span className={`tool-call-status tool-call-status-${status}`}>{STATUS_ICON[status]} {STATUS_LABEL[status]}</span>
+        {status === 'awaiting_approval' && approval_id !== undefined && (
+          <>
+            <button
+              type="button"
+              className="tool-call-approve"
+              onClick={(e) => { e.stopPropagation(); onApprove?.(approval_id); }}
+              aria-label="Approuver"
+            >
+              ✓ Approuver
+            </button>
+            <button
+              type="button"
+              className="tool-call-reject"
+              onClick={(e) => { e.stopPropagation(); onReject?.(approval_id); }}
+              aria-label="Rejeter"
+            >
+              ✗ Rejeter
+            </button>
+          </>
+        )}
         {(args || result) && (
           <button type="button" className="tool-call-toggle" onClick={toggle} aria-label={open ? 'Masquer les détails' : 'Voir les détails'}>
             <ChevronDown size={13} className={`tool-call-toggle-icon ${open ? 'is-open' : ''}`} />
