@@ -5,76 +5,34 @@ networks:
 volumes:
   postgres_data:
   redis_data:
-  agentai_uploads:
+  open_webui_data:
 
 services:
-  agentai-frontend:
-    build:
-      context: ./hermes-nebula
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
-    container_name: agentai-frontend
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3000:8080"
     environment:
-      - NODE_ENV=development
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
-    depends_on:
-      agentai-api:
-        condition: service_healthy
+      - ENABLE_OAUTH_SIGNUP=True
+      - OAUTH_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - OAUTH_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
+      - WEBUI_SECRET_KEY=${JWT_SECRET}
+      - WEBUI_AUTH=True
+      - DEFAULT_USER_ROLE=pending
+      # Configuration pour se connecter au LLM Proxy interne (si compatible API OpenAI)
+      - OPENAI_API_BASE_URL=http://llm-proxy:8001/v1
+    volumes:
+      - open_webui_data:/app/backend/data
     networks:
       agentai-net:
         ipv4_address: 172.18.0.8
     deploy:
       resources:
         limits:
-          memory: 512m
-
-  agentai-api:
-    build: ./hermes-nebula-api
-    container_name: agentai-api
-    restart: unless-stopped
-    expose:
-      - "8000"
-    env_file:
-      - .env
-    environment:
-      - HERMES_ENV=${HERMES_ENV}
-      - DATABASE_URL=postgresql+asyncpg://agentai:${DB_PASSWORD}@postgres:5432/agentai
-      - REDIS_URL=redis://redis:6379/0
-      - JWT_SECRET=${JWT_SECRET}
-      - JWT_ALGORITHM=${JWT_ALGORITHM}
-      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES}
-      - JWT_REFRESH_EXPIRE_DAYS=${JWT_REFRESH_EXPIRE_DAYS}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - SUPERADMIN_EMAIL=${SUPERADMIN_EMAIL}
-      - FRONTEND_URL=${FRONTEND_URL}
-      - UPLOAD_DIR=/uploads
-    volumes:
-      - agentai_uploads:/uploads
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      agentai-net:
-        ipv4_address: 172.18.0.6
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          memory: 768m
+          memory: 1024m
 
   llm-proxy:
     build: ./hermes-llm-proxy
@@ -102,46 +60,6 @@ services:
       resources:
         limits:
           memory: 384m
-
-  celery-worker:
-    build: ./hermes-nebula-api
-    container_name: celery-worker
-    restart: unless-stopped
-    command: celery -A app.workers.celery_app worker -l info -c 2 --without-heartbeat
-    env_file:
-      - .env
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://agentai:${DB_PASSWORD}@postgres:5432/agentai
-      - REDIS_URL=redis://redis:6379/0
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - HERMES_ENV=${HERMES_ENV}
-    depends_on:
-      - redis
-      - postgres
-    networks:
-      - agentai-net
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-
-  celery-beat:
-    build: ./hermes-nebula-api
-    container_name: celery-beat
-    restart: unless-stopped
-    command: celery -A app.workers.celery_app beat -l info --scheduler celery.beat:PersistentScheduler
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://agentai:${DB_PASSWORD}@postgres:5432/agentai
-      - REDIS_URL=redis://redis:6379/0
-      - HERMES_ENV=${HERMES_ENV}
-    depends_on:
-      - redis
-    networks:
-      - agentai-net
-    deploy:
-      resources:
-        limits:
-          memory: 128m
 
   postgres:
     image: postgres:16-alpine
