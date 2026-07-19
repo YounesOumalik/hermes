@@ -175,15 +175,17 @@ services:
     expose:
       - "8002"
     # Pas de binding externe — atteint uniquement via le BFF (orchestration-net)
+    env_file:
+      - /opt/hermes-orchestration/.env
     environment:
       - HERMES_ENV=production
       - HERMES_CORE_PORT=8002
-      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
-      - DATABASE_URL=${DATABASE_URL}
+      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET:-}
+      - DATABASE_URL=${DATABASE_URL:-}
       - HERMES_LLM_PROXY_URL=http://hermes-llm-proxy:8001
       - HERMES_LLM_PROXY_TOKEN=${HERMES_SERVICE_TOKEN:-}
       - MCP_SERVER_URL=http://mcp-server:3100
-      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-}
       - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
     volumes:
       - hermes_core_db:/var/lib/hermes-core
