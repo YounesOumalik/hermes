@@ -19,6 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from db.session import engine, async_session
 from api import conversations_router, agents_router, settings_router, tools_router
+from api.chat import router as chat_router
+from api.runs import router as runs_router
+from api.approvals import router as approvals_router
+from events import events_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("hermes.core")
@@ -165,6 +169,10 @@ app.include_router(conversations_router)
 app.include_router(agents_router)
 app.include_router(settings_router)
 app.include_router(tools_router)
+app.include_router(chat_router)
+app.include_router(runs_router)
+app.include_router(approvals_router)
+app.include_router(events_router)
 
 if __name__ == "__main__":
     import uvicorn
