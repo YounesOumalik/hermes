@@ -4,7 +4,7 @@ import { useState, type MouseEvent } from 'react';
 import { ChevronDown, Brain } from 'lucide-react';
 
 type ReasoningBlockProps = {
-  details: Record<string, unknown>[];
+  details: string | Record<string, unknown>[];
 };
 
 export default function ReasoningBlock({ details }: ReasoningBlockProps) {
@@ -15,7 +15,9 @@ export default function ReasoningBlock({ details }: ReasoningBlockProps) {
     setOpen((v) => !v);
   }
 
-  if (!details.length) return null;
+  const isString = typeof details === 'string';
+  const hasContent = isString ? (details as string).length > 0 : (details as Record<string, unknown>[]).length > 0;
+  if (!hasContent) return null;
 
   return (
     <div className="reasoning-block">
@@ -26,13 +28,17 @@ export default function ReasoningBlock({ details }: ReasoningBlockProps) {
       </button>
       {open && (
         <div className="reasoning-content">
-          {details.map((d, i) => (
-            <p key={i} className="reasoning-line">
-              {typeof d === 'object' && d !== null && 'text' in d
-                ? String((d as Record<string, unknown>).text)
-                : JSON.stringify(d)}
-            </p>
-          ))}
+          {isString ? (
+            <p className="reasoning-line">{details}</p>
+          ) : (
+            (details as Record<string, unknown>[]).map((d, i) => (
+              <p key={i} className="reasoning-line">
+                {typeof d === 'object' && d !== null && 'text' in d
+                  ? String((d as Record<string, unknown>).text)
+                  : JSON.stringify(d)}
+              </p>
+            ))
+          )}
         </div>
       )}
     </div>
