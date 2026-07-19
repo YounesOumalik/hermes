@@ -1,16 +1,19 @@
 # ============================================================================
 # docker-compose.yml — Stack d'orchestration multi-agents
 # ----------------------------------------------------------------------------
-# Services :
-#   • hermes-daemon   — Backend agent IA (FastAPI, port 8001)
-#   • hermes-studio   — Interface graphique (Next.js, port 3000)
-#   • n8n             — Moteur d'automatisation (port 5678)
-#   • mcp-server      — Serveur MCP Node.js (port 3100)
+# Architecture 4 couches Hermes OS :
+#   1. hermes-studio    — Next.js UI (:3000)
+#   2. Hermes Gateway   — BFF Next.js interne (route.ts /api/hermes/[...path])
+#   3a. hermes-core     — Orchestrateur Python FastAPI (:8002) [Phase 2]
+#   3b. n8n             — Moteur automatisation (:5678)
+#   3c. Postgres hôte   — DB (:5432, host.docker.internal)
+#   3d. mcp-server      — MCP filesystem/github/terminal (:3100)
+#   4. hermes-llm-proxy — Proxy LLM OpenAI-compat (:8001)
 #
 # Réseau : orchestration-net (bridge interne nommé)
-# Volumes : hermes_data, n8n_data, mcp_workspace
+# Volumes : hermes_data, n8n_data, mcp_workspace, hermes_core_db
 #
-# Déploiement : docker compose -f docker-compose.yml up -d
+# Deploiement : docker compose -f docker-compose.yml up -d --build
 # ============================================================================
 
 networks:
@@ -28,6 +31,8 @@ volumes:
     driver: local
   mcp_workspace:
     driver: local
+  hermes_core_db:
+    driver: local
 
 services:
   # --------------------------------------------------------------------------
@@ -41,8 +46,9 @@ services:
     restart: unless-stopped
     expose:
       - "8001"
-    ports:
-      - "8001:8001"
+    # Binding externe retiré — atteint uniquement via le BFF (orchestration-net)
+    # Le port 8001 est désormais servi par hermes-llm-proxy (Phase 1)
+    # Le daemon garde son port interne pour transition progressive (sera supprimé Phase 2)
     environment:
       - HERMES_ENV=production
       - HERMES_PORT=8001
@@ -73,7 +79,44 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: 384m
+        reservations:
+          memory: 192m
+
+  # --------------------------------------------------------------------------
+  # Hermes LLM Proxy — Refactor du daemon (Phase 1 du plan Hermes OS)
+  # OpenAI-compat /v1/models, /v1/chat/completions (SSE), Model Router
+  # --------------------------------------------------------------------------
+  hermes-llm-proxy:
+    build:
+      context: ./hermes-llm-proxy
+      dockerfile: Dockerfile
+    container_name: hermes-llm-proxy
+    restart: unless-stopped
+    expose:
+      - "8001"
+    # Pas de binding externe — atteint uniquement via le BFF (orchestration-net)
+    environment:
+      - HERMES_ENV=production
+      - HERMES_PORT=8001
+      - HERMES_SERVICE_TOKEN=${HERMES_SERVICE_TOKEN:-}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY}
+      - MINIMAX_BASE_URL=https://api.minimax.chat/v1
+      - MINIMAX_DEFAULT_MODEL=${MINIMAX_DEFAULT_MODEL:-MiniMax-M2.7}
+    networks:
+      - orchestration-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+        reservations:
+          memory: 192m
 
   # --------------------------------------------------------------------------
   # Hermes Studio — Interface graphique (Next.js)
@@ -90,9 +133,10 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
-      - HERMES_DAEMON_URL=http://hermes-daemon:8001
-      - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL:-https://hermes.smartefp.com}
-      - NEXT_PUBLIC_DAEMON_URL=${NEXT_PUBLIC_DAEMON_URL:-http://hermes-daemon:8001}
+      - HERMES_DAEMON_URL=http://hermes-llm-proxy:8001
+      - HERMES_CORE_URL=http://hermes-core:8002
+      - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL:-https://hermes.eaumalik.com}
+      - NEXT_PUBLIC_DAEMON_URL=${NEXT_PUBLIC_DAEMON_URL:-http://hermes-llm-proxy:8001}
       - HERMES_ADMIN_USERNAME=${HERMES_ADMIN_USERNAME:-admin}
       - HERMES_ADMIN_PASSWORD_HASH=${HERMES_ADMIN_PASSWORD_HASH}
       - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
@@ -101,7 +145,7 @@ services:
     env_file:
       - /opt/hermes-orchestration/.env
     depends_on:
-      hermes-daemon:
+      hermes-llm-proxy:
         condition: service_healthy
     networks:
       - orchestration-net
@@ -115,6 +159,8 @@ services:
       resources:
         limits:
           memory: 512m
+        reservations:
+          memory: 256m
 
   # --------------------------------------------------------------------------
   # n8n — Moteur d'automatisation
@@ -157,7 +203,10 @@ services:
     deploy:
       resources:
         limits:
+          cpus: '1.0'
           memory: 1g
+        reservations:
+          memory: 512m
 
   # --------------------------------------------------------------------------
   # MCP Server — Serveur Model Context Protocol (Node.js)
@@ -191,4 +240,7 @@ services:
     deploy:
       resources:
         limits:
+          cpus: '0.5'
           memory: 512m
+        reservations:
+          memory: 256m

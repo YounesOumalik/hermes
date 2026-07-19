@@ -1,0 +1,21 @@
+# hermes-llm-proxy/.dockerignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+htmlcov/
+*.egg-info/
+.venv/
+venv/
+.git/
+.gitignore
+.vscode/
+.idea/
+*.md
+tests/
+docs/
+.env
+.env.*
+README.md
