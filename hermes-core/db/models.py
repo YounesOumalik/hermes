@@ -63,7 +63,7 @@ class Message(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("hermes_core.conversations.id", ondelete="CASCADE"), nullable=False
     )
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # user | assistant | system | tool
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -84,7 +84,7 @@ class Attachment(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("hermes_core.conversations.id", ondelete="CASCADE"), nullable=False
     )
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -127,7 +127,7 @@ class Run(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("hermes_core.conversations.id", ondelete="CASCADE"), nullable=False
     )
     agent_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
@@ -156,7 +156,7 @@ class ToolCall(Base):
     __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[int] = mapped_column(ForeignKey("hermes_core.runs.id", ondelete="CASCADE"), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
     args: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     result: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
@@ -179,7 +179,7 @@ class Approval(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tool_call_id: Mapped[int] = mapped_column(
-        ForeignKey("tool_calls.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("hermes_core.tool_calls.id", ondelete="CASCADE"), nullable=False
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     # status: pending | approved | rejected | modified
@@ -200,7 +200,7 @@ class UsageEvent(Base):
     __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[Optional[int]] = mapped_column(ForeignKey("runs.id", ondelete="SET NULL"), nullable=True)
+    run_id: Mapped[Optional[int]] = mapped_column(ForeignKey("hermes_core.runs.id", ondelete="SET NULL"), nullable=True)
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
