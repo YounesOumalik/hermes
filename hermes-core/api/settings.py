@@ -66,10 +66,10 @@ async def settings_status():
         pass
 
     return SettingsStatus(
-        minimax_configured=bool(app_settings.minimax_api_key or persisted.get("MINIMAX_API_KEY")),
+        minimax_configured=bool(persisted.get("MINIMAX_API_KEY")),
         telegram_configured=bool(persisted.get("TELEGRAM_BOT_TOKEN")),
         github_configured=bool(persisted.get("GITHUB_TOKEN")),
-        model=app_settings.minimax_default_model,
+        model="MiniMax-M2.7",  # Le llm-proxy résout la liste via /v1/models
         mcp_ready=mcp_ready,
     )
 
