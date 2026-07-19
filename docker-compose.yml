@@ -163,6 +163,52 @@ services:
           memory: 256m
 
   # --------------------------------------------------------------------------
+  # Hermes Core — Orchestrateur (Phase 2 du plan Hermes OS)
+  # FastAPI + SQLAlchemy + Alembic + gunicorn (2 workers)
+  # --------------------------------------------------------------------------
+  hermes-core:
+    build:
+      context: ./hermes-core
+      dockerfile: Dockerfile
+    container_name: hermes-core
+    restart: unless-stopped
+    expose:
+      - "8002"
+    # Pas de binding externe — atteint uniquement via le BFF (orchestration-net)
+    environment:
+      - HERMES_ENV=production
+      - HERMES_CORE_PORT=8002
+      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
+      - DATABASE_URL=${DATABASE_URL}
+      - HERMES_LLM_PROXY_URL=http://hermes-llm-proxy:8001
+      - HERMES_LLM_PROXY_TOKEN=${HERMES_SERVICE_TOKEN:-}
+      - MCP_SERVER_URL=http://mcp-server:3100
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+      - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
+    volumes:
+      - hermes_core_db:/var/lib/hermes-core
+      - ./hermes-core:/app
+    networks:
+      - orchestration-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      hermes-llm-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+        reservations:
+          memory: 512m
+
+  # --------------------------------------------------------------------------
   # n8n — Moteur d'automatisation
   # --------------------------------------------------------------------------
   n8n:
