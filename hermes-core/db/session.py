@@ -26,6 +26,11 @@ class Base(DeclarativeBase):
     pass
 
 
+# Schéma dédié pour isoler les tables hermes-core des autres services (n8n, etc.)
+# Cela évite les conflits de permissions et garde une séparation claire.
+DB_SCHEMA = "hermes_core"
+
+
 # Engine global — pool partagé entre requêtes
 engine = create_async_engine(
     settings.database_url,

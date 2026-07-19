@@ -33,6 +33,7 @@ from .session import Base
 # ---------------------------------------------------------------------------
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
@@ -52,11 +53,13 @@ class Conversation(Base):
 
     __table_args__ = (
         Index("ix_conversations_user_updated", "user_id", "updated_at"),
+        {"schema": "hermes_core"},
     )
 
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
@@ -71,11 +74,13 @@ class Message(Base):
 
     __table_args__ = (
         Index("ix_messages_conv_time", "conversation_id", "time"),
+        {"schema": "hermes_core"},
     )
 
 
 class Attachment(Base):
     __tablename__ = "attachments"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
@@ -94,6 +99,7 @@ class Attachment(Base):
 # ---------------------------------------------------------------------------
 class Agent(Base):
     __tablename__ = "agents"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
@@ -117,6 +123,7 @@ class Agent(Base):
 # ---------------------------------------------------------------------------
 class Run(Base):
     __tablename__ = "runs"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
@@ -140,11 +147,13 @@ class Run(Base):
     __table_args__ = (
         Index("ix_runs_conv_status", "conversation_id", "status"),
         Index("ix_runs_status_started", "status", "started_at"),
+        {"schema": "hermes_core"},
     )
 
 
 class ToolCall(Base):
     __tablename__ = "tool_calls"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
@@ -166,6 +175,7 @@ class ToolCall(Base):
 
 class Approval(Base):
     __tablename__ = "approvals"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tool_call_id: Mapped[int] = mapped_column(
@@ -187,6 +197,7 @@ class Approval(Base):
 class UsageEvent(Base):
     """Compteur tokens / cost par appel LLM."""
     __tablename__ = "usage_events"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[Optional[int]] = mapped_column(ForeignKey("runs.id", ondelete="SET NULL"), nullable=True)
@@ -202,6 +213,7 @@ class UsageEvent(Base):
 class AuditEvent(Base):
     """Log d'audit (Master Prompt §62)."""
     __tablename__ = "audit_events"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
@@ -215,6 +227,7 @@ class AuditEvent(Base):
 
     __table_args__ = (
         Index("ix_audit_user_time", "user_id", "timestamp"),
+        {"schema": "hermes_core"},
     )
 
 
@@ -224,6 +237,7 @@ class AuditEvent(Base):
 class Tool(Base):
     """Catalogue des outils disponibles (DB-backed, mcp + n8n + custom)."""
     __tablename__ = "tools"
+    __table_args__ = {"schema": "hermes_core"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
