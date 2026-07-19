@@ -189,7 +189,6 @@ services:
       - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
     volumes:
       - /opt/hermes-orchestration/.env:/opt/hermes-orchestration/.env:ro
-    volumes:
       - hermes_core_db:/var/lib/hermes-core
       - ./hermes-core:/app
     networks:
