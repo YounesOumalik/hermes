@@ -1,3 +1,0 @@
-# hermes-core/alembic/versions/.gitkeep
-# Ce dossier contient les migrations Alembic générées par `alembic revision --autogenerate`.
-# La première migration "init schema Phase 2" est créée au premier deploy.

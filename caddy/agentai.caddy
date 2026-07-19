@@ -1,0 +1,29 @@
+{$DOMAIN} {
+    # Sécurité headers
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    # API Backend
+    handle_path /api/* {
+        reverse_proxy agentai-api:8000
+    }
+
+    # LLM Proxy (interne uniquement, pas exposé publiquement)
+    # handle_path /llm/* {
+    #     reverse_proxy llm-proxy:8001
+    # }
+
+    # Frontend Next.js (catch-all)
+    handle {
+        reverse_proxy agentai-frontend:3000
+    }
+
+    # Upload max size
+    request_body {
+        max_size 50MB
+    }
+}

@@ -1,18 +1,58 @@
 # Secrets et environnement
 .env
 .env.local
-*.env
+.env.*.local
+.env.production
+.env.development
+hermes-nebula/.env*
+hermes-nebula-api/.env*
+
+# Dépendances
+node_modules/
+**/node_modules/
+
+# Build artifacts
+.next/
+**/.next/
+out/
+dist/
+build/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
 
 # Données runtime
 n8n-data/
-hermes-daemon/__pycache__/
-hermes-daemon/.pytest_cache/
-mcp-server/node_modules/
-hermes-studio/node_modules/
-hermes-studio/.next/
-hermes-studio/*.tsbuildinfo
-infra/webhook/node_modules/
+uploads/
+*.sqlite3
+*.db
 
 # Logs
 *.log
+logs/
+
+# Backups
+*.bak
+*.bak.*
 docker-compose.yml.bak
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tests & coverage
+coverage/
+.coverage
+htmlcov/

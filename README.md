@@ -1,84 +1,158 @@
-# ProdServeur
+# AgentAI — Multi-Agent Workspace
 
-Hébergement du **nouveau VPS de production** Contabo (vmi3445841, IP `169.58.30.70`).
+Stack de production pour la plateforme SaaS multi-tenant **AgentAI** (ex-Hermes Nebula), déployée sur VPS Contabo (`169.58.30.70`) et exposée via `https://agentai.smartefp.com`.
 
-## Quick-start
+> 📋 Audit complet et plan de nettoyage disponibles dans [`docs/AUDIT_2026-07-19.md`](./docs/AUDIT_2026-07-19.md).
 
-```bash
-# 1. Injecter la clé publique (si pas déjà fait)
-./scripts/bootstrap.sh
+## Architecture (3 services buildés + 2 services managés)
 
-# 2. Vérifier que la connexion marche
-./scripts/test-connection.sh
-
-# 3. Une fois opérationnel, se connecter en une commande
-ssh prodserveur
+```
+                    ┌─────────────────────────────────────┐
+                    │  agentai.smartefp.com (Caddy + TLS) │
+                    └──────────────┬──────────────────────┘
+                                   │
+                ┌──────────────────┴──────────────────┐
+                │                                     │
+        ┌───────▼────────┐                  ┌─────────▼────────┐
+        │ agentai-frontend│                  │   /api/* (Caddy  │
+        │ Next.js 15      │                  │   strip /api)    │
+        │ :3000           │                  └─────────┬────────┘
+        └─────────────────┘                            │
+                                              ┌───────▼────────┐
+                                              │  agentai-api   │
+                                              │  FastAPI       │
+                                              │  :8000         │
+                                              └───┬──────┬─────┘
+                              ┌───────────────────┘      └─────────────┐
+                       ┌──────▼──────┐  ┌──────────▼─────┐  ┌──────────▼──────┐
+                       │  postgres   │  │ celery-worker │  │   llm-proxy     │
+                       │  :5432      │  │ + celery-beat │  │  MiniMax/OpenAI │
+                       └─────────────┘  └───────────────┘  └─────────────────┘
+                                                │
+                                       ┌────────▼────────┐
+                                       │  redis :6379    │
+                                       └─────────────────┘
 ```
 
-## Sommaire
+| Service | Image / Build | Rôle | Port interne |
+|---|---|---|---|
+| `agentai-frontend` | `./hermes-nebula` (Next.js 15) | UI React | 3000 |
+| `agentai-api` | `./hermes-nebula-api` (FastAPI) | API REST + auth | 8000 |
+| `llm-proxy` | `./hermes-llm-proxy` (FastAPI) | Routeur LLM (MiniMax/OpenAI/Codex) | 8001 |
+| `celery-worker` | `./hermes-nebula-api` | Jobs async | — |
+| `celery-beat` | `./hermes-nebula-api` | Scheduler | — |
+| `postgres` | `postgres:16-alpine` | Base de données | 5432 |
+| `redis` | `redis:7-alpine` | Cache + file Celery | 6379 |
 
-- [HANDOVER.md](./HANDOVER.md) — Procédure complète d'amorçage SSH, hardening, stack applicative, troubleshooting.
-- [`scripts/bootstrap.sh`](./scripts/bootstrap.sh) — Injecte `id_smartserveur.pub` sur le serveur (mode auto sshpass ou mode manuel).
-- [`scripts/test-connection.sh`](./scripts/test-connection.sh) — 4 vérifs : réseau, host key, auth par clé, commande distante.
-- [`scripts/inventory.sh`](./scripts/inventory.sh) — Diagnostic complet du serveur (10 sections : ressources, réseau, apps, services…).
-- [`scripts/install-base-stack.sh`](./scripts/install-base-stack.sh) — Script idempotent d'installation de la stack (Docker, Node, Caddy, Postgres, Redis).
-- [`scripts/setup-orchestration.sh`](./scripts/setup-orchestration.sh) — Préparation VPS pour la stack d'orchestration (Coolify + UFW + arborescence).
-- [`scripts/generate-secrets.sh`](./scripts/generate-secrets.sh) — Génération des secrets dans `.env`.
-- [`docker-compose.yml`](./docker-compose.yml) — Stack d'orchestration (Hermes Daemon, Hermes Studio, n8n, MCP-Server).
-- [`docs/COOLIFY_SETUP.md`](./docs/COOLIFY_SETUP.md) — Guide de configuration Coolify.
-- [`infra/webhook/`](./infra/webhook/) — Déploiement auto via webhook GitHub (pattern eaumalik.com).
+## Démarrage rapide
 
-## Stack d'orchestration multi-agents
+### Prérequis
+- Docker + Docker Compose v2
+- Fichier `.env` à la racine (voir `.env.template` pour le modèle)
 
-Une stack complète d'orchestration IA est déployable sur ce VPS :
+### Lancer la stack
 
-| Service | Port | Rôle |
+```bash
+# 1. Copier le template et renseigner les secrets
+cp .env.template .env
+#   → DB_PASSWORD, JWT_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+#     ENCRYPTION_KEY, NEXT_PUBLIC_API_URL, FRONTEND_URL, DOMAIN...
+
+# 2. Build + démarrer
+docker compose up -d --build
+
+# 3. Vérifier
+docker compose ps
+curl http://localhost:8000/health        # → {"status":"healthy"}
+curl http://localhost:3000/login         # → page HTML
+```
+
+### Variables d'environnement critiques
+
+| Variable | Description |
+|---|---|
+| `DOMAIN` | Domaine public (`agentai.smartefp.com`) |
+| `FRONTEND_URL` | URL frontend pour OAuth redirect |
+| `NEXT_PUBLIC_API_URL` | URL API publique (compilée dans le bundle Next.js) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Credentials Google OAuth |
+| `JWT_SECRET` | Secret signature JWT |
+| `ENCRYPTION_KEY` | Clé Fernet pour chiffrer les API keys |
+| `DB_PASSWORD` | Mot de passe PostgreSQL |
+| `HERMES_ENV` | `development` (active dev-login) ou `production` |
+
+## Structure du dépôt
+
+```
+ProdServeur/
+├── hermes-nebula/           # Frontend Next.js 15 (UI)
+│   ├── src/app/             # Pages: login, page, admin, pending
+│   ├── Dockerfile
+│   └── .env.production      # Variables NEXT_PUBLIC_* pour le build
+│
+├── hermes-nebula-api/       # Backend FastAPI
+│   ├── app/
+│   │   ├── api/             # Routers: auth, agents, workspaces, tools, models_api
+│   │   ├── models/          # 14 modèles SQLAlchemy
+│   │   ├── services/        # encryption, llm_router, quota_checker
+│   │   ├── workers/         # Celery tasks
+│   │   ├── main.py          # Entry FastAPI
+│   │   └── config.py
+│   ├── alembic/             # Migrations DB
+│   └── Dockerfile
+│
+├── hermes-llm-proxy/        # Routeur LLM (MiniMax / OpenAI / Codex)
+│   ├── providers/           # Implémentations par provider
+│   ├── router.py
+│   └── Dockerfile
+│
+├── caddy/                   # Configs vhosts Caddy (référence)
+├── docs/
+│   ├── AUDIT_2026-07-19.md  # Audit complet
+│   └── design/nebula-mockups/  # 37 mockups de design
+├── infra/webhook/           # Webhook GitHub pour déploiement auto
+├── scripts/                 # Bootstrap VPS, génération secrets, etc.
+├── tools/                   # Définitions JSON des tools MCP/agents
+├── docker-compose.yml       # Stack complète
+├── .env.template            # Modèle de configuration
+└── README.md                # Ce fichier
+```
+
+## Déploiement sur VPS
+
+Le déploiement se fait via webhook GitHub (voir `infra/webhook/`). Pattern Vercel-like : `git push main` → déploiement en 1-3 min.
+
+```bash
+# Sur le VPS, la stack vit dans /srv/agentai/
+ssh prodserveur
+cd /srv/agentai
+docker compose ps
+docker compose logs -f agentai-api
+```
+
+## Endpoints utiles
+
+| Endpoint | Méthode | Description |
 |---|---|---|
-| Hermes Daemon | 8001 | Backend agent IA (FastAPI + Minimax) |
-| Hermes Studio | 3000 | Interface graphique (Next.js) |
-| n8n | 5678 | Moteur d'automatisation |
-| MCP-Server | 3100 | Serveur Model Context Protocol (filesystem + GitHub) |
+| `/api/health` | GET | Healthcheck API |
+| `/api/auth/google` | GET | Démarre le flow Google OAuth |
+| `/api/auth/google/callback` | GET | Callback OAuth (reçoit le code) |
+| `/api/auth/me` | GET | Profil utilisateur (JWT requis) |
+| `/api/auth/dev-login` | POST | Login dev (`HERMES_ENV=development` uniquement) |
+| `/api/workspaces` | GET/POST | Gestion workspaces |
+| `/api/admin/stats` | GET | Stats admin (superadmin requis) |
 
-### 🚀 Déploiement auto (webhook) — recommandé
+## Stack technique
 
-Même pattern que `eaumalik.com` : `git push main` → déploiement en 1-3 min.
+- **Backend** : Python 3.12, FastAPI, SQLAlchemy 2.0 async, Pydantic v2, Alembic, asyncpg, Celery, Redis
+- **Frontend** : Next.js 15, React 18, TypeScript 5.6, Zustand, lucide-react, CSS vanilla (design system glassmorphism dark)
+- **DB** : PostgreSQL 16
+- **Proxy** : Caddy (TLS auto Let's Encrypt)
+- **Conteneurisation** : Docker Compose
+- **Auth** : JWT (access + refresh) + Google OAuth 2.0
 
-```bash
-# 1. Depuis le poste local — installer le webhook sur le VPS
-./infra/webhook/install-webhook.sh --remote --repo https://github.com/<TON_USER>/ProdServeur.git
+## Voir aussi
 
-# 2. Copier le secret HMAC affiché → GitHub Settings → Webhooks
-#    URL: https://<TON_DOMAINE>/webhook
-#    Content type: application/json
-#    Events: push
+- [`docs/AUDIT_2026-07-19.md`](./docs/AUDIT_2026-07-19.md) — Audit complet et plan de nettoyage
+- [`HANDOVER.md`](./HANDOVER.md) — Procédure d'amorçage SSH et hardening VPS
+- [`docs/design/nebula-mockups/`](./docs/design/nebula-mockups/) — 37 mockups de design
 
-# 3. Premier déploiement manuel (ou laisser le webhook faire)
-ssh prodserveur
-cd /opt/hermes-orchestration/repo
-source /opt/hermes-orchestration/.env
-docker compose -f docker-compose.yml up -d --build
-
-# 4. Vérifier
-curl http://localhost:3000   # Hermes Studio
-curl http://localhost:5678   # n8n
-curl http://localhost:8001/health  # Hermes Daemon
-
-# 5. Désormais, chaque git push origin main → redéploiement auto
-```
-
-**Architecture :**
-
-```
-Utilisateur → (Telegram/n8n) → Hermes (Minimax) → (Actions/MCP/n8n) → Résultat
-```
-
-## État actuel (au 2026-07-16)
-
-- ✅ Auth SSH par clé **opérationnelle** : `ssh prodserveur`
-- ✅ Réseau joignable (port 22 ouvert, ping OK, latence ~75 ms)
-- ✅ Alias `prodserveur` dans `~/.ssh/config` (HostName `169.58.30.70`, clé `id_smartserveur`)
-- ✅ User `younes` créé + clé injectée + sudo activé
-- ✅ Host key enregistrée dans `~/.ssh/known_hosts`
-- ⏳ Hardening restant : sudo NOPASSWD, désactivation password auth, UFW, fail2ban (voir `HANDOVER.md` §7)
-test 1784292308
-# trigger 1784293194

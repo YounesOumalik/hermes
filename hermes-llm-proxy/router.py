@@ -1,114 +1,121 @@
-"""
-hermes-llm-proxy/router.py
+import base64
+import json
+import httpx
+import uuid
+from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import select, and_
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from config import get_settings
 
-Model Router : dispatche les appels vers le bon provider selon le préfixe du modèle.
+router = APIRouter(prefix="/v1", tags=["llm"])
+settings = get_settings()
 
-Règles de routage (par ordre de matching) :
-  - "minimax-*"      → MinimaxProvider  (câblé MVP)
-  - "MiniMax-*"      → MinimaxProvider  (alias UI)
-  - "gpt-*" / "o1-*" → OpenAIProvider   (stub MVP, à activer)
-  - "codex-*"        → CodexProvider    (stub MVP, à activer)
-  - défaut           → MinimaxProvider (fallback, log warning)
-
-Ajouter un nouveau provider = 1 import + 1 entrée dans PROVIDER_REGISTRY.
-"""
-
-from typing import Dict, Type
-import logging
-
-from providers import (
-    Provider,
-    MinimaxProvider,
-    OpenAIProvider,
-    CodexProvider,
-    ProviderError,
-    ProviderUnavailable,
-)
-
-logger = logging.getLogger("hermes.router")
+# Engine et Session localisés pour le proxy
+engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-# Table d'enregistrement (provider name → class).
-# Pour activer OpenAI : ajouter import + entry ici + le router dispatchera auto.
-PROVIDER_REGISTRY: Dict[str, Type[Provider]] = {
-    "minimax": MinimaxProvider,
-    # "openai": OpenAIProvider,   # décommenter quand OPENAI_API_KEY dispo
-    # "codex":  CodexProvider,    # décommenter quand CODEX_API_KEY dispo
-}
+def decrypt(ciphertext: str) -> str:
+    """Déchiffre la clé API avec AES-256-GCM."""
+    key = base64.urlsafe_b64decode(settings.encryption_key)
+    raw = base64.urlsafe_b64decode(ciphertext)
+    nonce = raw[:12]
+    ct = raw[12:]
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ct, None).decode("utf-8")
 
 
-class ModelRouter:
-    """Router principal. Maintient les instances provider et dispatche par préfixe."""
+class ChatCompletionRequest(BaseModel):
+    model_config_id: uuid.UUID
+    messages: list
+    temperature: float = 0.7
+    max_tokens: int = 4096
 
-    def __init__(self):
-        self._providers: Dict[str, Provider] = {}
 
-    def register(self, name: str, provider: Provider) -> None:
-        """Enregistre une instance provider."""
-        self._providers[name] = provider
-        logger.info(f"Provider registered: {name}")
+@router.post("/chat/completions")
+async def proxy_chat_completion(payload: ChatCompletionRequest):
+    async with AsyncSessionLocal() as db:
+        # 1. Charger la config du modèle
+        from sqlalchemy.sql import text
+        # Pour éviter les imports cycliques, on fait une requête SQL brute ou SQLAlchemy core
+        config_stmt = text("SELECT provider, model_name FROM model_configs WHERE id = :id AND enabled = true")
+        config_res = await db.execute(config_stmt, {"id": payload.model_config_id})
+        model_config = config_res.fetchone()
 
-    def get(self, name: str) -> Provider:
-        """Récupère une instance provider par son nom."""
-        if name not in self._providers:
-            raise ProviderUnavailable(
-                f"Provider '{name}' non enregistré. "
-                f"Disponibles : {list(self._providers.keys())}"
+        if not model_config:
+            raise HTTPException(status_code=404, detail="Model configuration not found or disabled")
+
+        provider, model_name = model_config[0], model_config[1]
+
+        # 2. Charger la clé API du provider
+        key_stmt = text("SELECT encrypted_key, base_url FROM api_keys WHERE provider = :provider AND is_active = true")
+        key_res = await db.execute(key_stmt, {"provider": provider.lower()})
+        api_key_record = key_res.fetchone()
+
+        if not api_key_record:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No active global API Key found for provider: {provider}. Contact your administrator."
             )
-        return self._providers[name]
 
-    def resolve(self, model_name: str) -> Provider:
-        """Détermine le provider à utiliser pour un nom de modèle donné.
+        encrypted_key, base_url = api_key_record[0], api_key_record[1]
 
-        Logique :
-          1. Match par préfixe (insensible à la casse)
-          2. Fallback sur le provider par défaut (premier enregistré)
-        """
-        if not model_name:
-            return self._fallback()
+    # 3. Déchiffrer la clé API
+    try:
+        raw_api_key = decrypt(encrypted_key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to decrypt API key: {str(e)}")
 
-        model_lower = model_name.lower()
+    # 4. Préparer l'URL et les en-têtes
+    url = f"{base_url}/chat/completions" if base_url else ""
+    if not url:
+        if provider == "minimax":
+            url = "https://api.minimax.chat/v1/chat/completions"
+        elif provider == "openai":
+            url = "https://api.openai.com/v1/chat/completions"
+        elif provider == "anthropic":
+            url = "https://api.anthropic.com/v1/messages"  # Format différent
+        elif provider == "google_gemini":
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?key={raw_api_key}"
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported or unconfigured provider base URL: {provider}")
 
-        # Règles explicites (l'extension se fait ici, pas dans le provider)
-        prefix_rules = [
-            ("minimax", ["minimax-"]),  # Minimax-M2.7 etc.
-            ("minimax", ["minimax-"]),  # alias minimax-*
-            ("openai", ["gpt-", "o1-", "o3-", "o4-"]),
-            ("codex", ["codex-"]),
-        ]
+    # Formater la requête selon le provider
+    headers = {"Content-Type": "application/json"}
+    
+    # Pour format standard OpenAI (MiniMax v2, OpenAI, OpenCode Zen, etc.)
+    openai_headers = {**headers, "Authorization": f"Bearer {raw_api_key}"}
+    openai_payload = {
+        "model": model_name,
+        "messages": payload.messages,
+        "temperature": payload.temperature,
+        "max_tokens": payload.max_tokens,
+        "stream": True
+    }
 
-        for provider_name, prefixes in prefix_rules:
-            for prefix in prefixes:
-                if model_lower.startswith(prefix):
-                    if provider_name in self._providers:
-                        return self._providers[provider_name]
-                    # Provider pas câblé → on tombe sur la règle suivante
-                    break
-
-        # Fallback : premier provider enregistré
-        return self._fallback()
-
-    def _fallback(self) -> Provider:
-        if not self._providers:
-            raise ProviderUnavailable("Aucun provider enregistré dans le router")
-        first_name = next(iter(self._providers))
-        logger.warning(
-            f"Fallback provider: '{first_name}' (modele non matché par préfixe)"
-        )
-        return self._providers[first_name]
-
-    async def list_all_models(self) -> list:
-        """Agrège la liste de modèles de tous les providers câblés.
-
-        Skip silencieusement les providers non configurés (ProviderUnavailable).
-        """
-        all_models: list = []
-        for name, provider in self._providers.items():
+    # 5. Streamer vers le provider
+    async def openai_stream_generator():
+        async with httpx.AsyncClient(timeout=120.0) as client:
             try:
-                models = await provider.list_models()
-                all_models.extend(models)
-            except ProviderUnavailable as e:
-                logger.debug(f"Provider '{name}' non configuré, skip: {e}")
-            except ProviderError as e:
-                logger.warning(f"Provider '{name}' erreur list_models: {e}")
-        return all_models
+                async with client.stream(
+                    "POST",
+                    url,
+                    headers=openai_headers,
+                    json=openai_payload
+                ) as response:
+                    if response.status_code != 200:
+                        error_detail = await response.aread()
+                        yield f"data: {json.dumps({'error': f'LLM Provider error {response.status_code}: {error_detail.decode()}'})}\n\n"
+                        return
+
+                    async for line in response.aiter_lines():
+                        if line:
+                            yield f"{line}\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    # Gérer Gemini ou Anthropic si nécessaire (ici on met l'implémentation standard compatible OpenAI)
+    return StreamingResponse(openai_stream_generator(), media_type="text/event-stream")

@@ -1,295 +1,189 @@
-# ============================================================================
-# docker-compose.yml — Stack d'orchestration multi-agents
-# ----------------------------------------------------------------------------
-# Architecture 4 couches Hermes OS :
-#   1. hermes-studio    — Next.js UI (:3000)
-#   2. Hermes Gateway   — BFF Next.js interne (route.ts /api/hermes/[...path])
-#   3a. hermes-core     — Orchestrateur Python FastAPI (:8002) [Phase 2]
-#   3b. n8n             — Moteur automatisation (:5678)
-#   3c. Postgres hôte   — DB (:5432, host.docker.internal)
-#   3d. mcp-server      — MCP filesystem/github/terminal (:3100)
-#   4. hermes-llm-proxy — Proxy LLM OpenAI-compat (:8001)
-#
-# Réseau : orchestration-net (bridge interne nommé)
-# Volumes : hermes_data, n8n_data, mcp_workspace, hermes_core_db
-#
-# Deploiement : docker compose -f docker-compose.yml up -d --build
-# ============================================================================
-
 networks:
-  orchestration-net:
-    name: orchestration-net
-    external: true
-  coolify:
-    name: coolify
-    external: true
+  agentai-net:
+    name: agentai-net
 
 volumes:
-  hermes_data:
-    driver: local
-  n8n_data:
-    driver: local
-  mcp_workspace:
-    driver: local
-  hermes_core_db:
-    driver: local
+  postgres_data:
+  redis_data:
+  agentai_uploads:
 
 services:
-  # --------------------------------------------------------------------------
-  # Hermes Daemon — Backend agent IA (FastAPI)
-  # --------------------------------------------------------------------------
-  hermes-daemon:
+  agentai-frontend:
     build:
-      context: ./hermes-daemon
-      dockerfile: Dockerfile
-    container_name: hermes-daemon
+      context: ./hermes-nebula
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
+    container_name: agentai-frontend
     restart: unless-stopped
-    expose:
-      - "8001"
-    # Binding externe retiré — atteint uniquement via le BFF (orchestration-net)
-    # Le port 8001 est désormais servi par hermes-llm-proxy (Phase 1)
-    # Le daemon garde son port interne pour transition progressive (sera supprimé Phase 2)
-    environment:
-      - HERMES_ENV=production
-      - HERMES_PORT=8001
-      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
-      - MINIMAX_API_KEY=${MINIMAX_API_KEY}
-      - MINIMAX_BASE_URL=https://api.minimax.chat/v1
-      - MINIMAX_MODEL=${MINIMAX_MODEL:-abab6.5s-chat}
-      - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
-      - MCP_SERVER_URL=http://mcp-server:3100
-      - POSTGRES_HOST=host.docker.internal
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=${POSTGRES_DB:-hermes}
-      - POSTGRES_USER=${POSTGRES_USER:-younes}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    volumes:
-      - hermes_data:/data
-      - ./hermes-daemon:/app
-    networks:
-      - orchestration-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          memory: 384m
-        reservations:
-          memory: 192m
-
-  # --------------------------------------------------------------------------
-  # Hermes LLM Proxy — Refactor du daemon (Phase 1 du plan Hermes OS)
-  # OpenAI-compat /v1/models, /v1/chat/completions (SSE), Model Router
-  # --------------------------------------------------------------------------
-  hermes-llm-proxy:
-    build:
-      context: ./hermes-llm-proxy
-      dockerfile: Dockerfile
-    container_name: hermes-llm-proxy
-    restart: unless-stopped
-    expose:
-      - "8001"
-    # Pas de binding externe — atteint uniquement via le BFF (orchestration-net)
-    environment:
-      - HERMES_ENV=production
-      - HERMES_PORT=8001
-      - HERMES_SERVICE_TOKEN=${HERMES_SERVICE_TOKEN:-}
-      - MINIMAX_API_KEY=${MINIMAX_API_KEY}
-      - MINIMAX_BASE_URL=https://api.minimax.chat/v1
-      - MINIMAX_DEFAULT_MODEL=${MINIMAX_DEFAULT_MODEL:-MiniMax-M2.7}
-    networks:
-      - orchestration-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          memory: 384m
-        reservations:
-          memory: 192m
-
-  # --------------------------------------------------------------------------
-  # Hermes Studio — Interface graphique (Next.js)
-  # --------------------------------------------------------------------------
-  hermes-studio:
-    build:
-      context: ./hermes-studio
-      dockerfile: Dockerfile
-    container_name: hermes-studio
-    restart: unless-stopped
-    expose:
-      - "3000"
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=production
-      - HERMES_DAEMON_URL=http://hermes-llm-proxy:8001
-      - HERMES_CORE_URL=http://hermes-core:8002
-      - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL:-https://hermes.eaumalik.com}
-      - NEXT_PUBLIC_DAEMON_URL=${NEXT_PUBLIC_DAEMON_URL:-http://hermes-llm-proxy:8001}
-      - HERMES_ADMIN_USERNAME=${HERMES_ADMIN_USERNAME:-admin}
-      - HERMES_ADMIN_PASSWORD_HASH=${HERMES_ADMIN_PASSWORD_HASH}
-      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET}
-      - HERMES_SESSION_SECRET=${HERMES_SESSION_SECRET}
-      - HERMES_ALLOWED_ORIGINS=${HERMES_ALLOWED_ORIGINS:-https://hermes.eaumalik.com}
-    env_file:
-      - /opt/hermes-orchestration/.env
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
     depends_on:
-      hermes-llm-proxy:
+      agentai-api:
         condition: service_healthy
     networks:
-      - orchestration-net
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/login', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+      agentai-net:
+        ipv4_address: 172.18.0.8
     deploy:
       resources:
         limits:
           memory: 512m
-        reservations:
-          memory: 256m
 
-  # --------------------------------------------------------------------------
-  # Hermes Core — Orchestrateur (Phase 2 du plan Hermes OS)
-  # FastAPI + SQLAlchemy + Alembic + gunicorn (2 workers)
-  # --------------------------------------------------------------------------
-  hermes-core:
-    build:
-      context: ./hermes-core
-      dockerfile: Dockerfile
-    container_name: hermes-core
+  agentai-api:
+    build: ./hermes-nebula-api
+    container_name: agentai-api
     restart: unless-stopped
     expose:
-      - "8002"
-    # Pas de binding externe — atteint uniquement via le BFF (orchestration-net)
-    # env vars lues depuis /opt/hermes-orchestration/.env via le deploy script
-    # (le webhook deploy fait `set -a && source` avant `docker compose up`)
+      - "8000"
+    env_file:
+      - .env
     environment:
-      - HERMES_ENV=production
-      - HERMES_CORE_PORT=8002
-      - HERMES_JWT_SECRET=${HERMES_JWT_SECRET:-}
-      - DATABASE_URL=${DATABASE_URL:-}
-      - HERMES_LLM_PROXY_URL=http://hermes-llm-proxy:8001
-      - HERMES_LLM_PROXY_TOKEN=${HERMES_SERVICE_TOKEN:-}
-      - MCP_SERVER_URL=http://mcp-server:3100
-      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-}
-      - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
+      - HERMES_ENV=${HERMES_ENV}
+      - DATABASE_URL=postgresql+asyncpg://agentai:${DB_PASSWORD}@postgres:5432/agentai
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_ALGORITHM=${JWT_ALGORITHM}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES}
+      - JWT_REFRESH_EXPIRE_DAYS=${JWT_REFRESH_EXPIRE_DAYS}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - SUPERADMIN_EMAIL=${SUPERADMIN_EMAIL}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - UPLOAD_DIR=/uploads
     volumes:
-      - /opt/hermes-orchestration/.env:/opt/hermes-orchestration/.env:ro
-      - hermes_core_db:/var/lib/hermes-core
-      - ./hermes-core:/app
-    networks:
-      - orchestration-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - agentai_uploads:/uploads
     depends_on:
-      hermes-llm-proxy:
+      postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      agentai-net:
+        ipv4_address: 172.18.0.6
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 20s
     deploy:
       resources:
         limits:
           memory: 768m
-        reservations:
-          memory: 512m
 
-  # --------------------------------------------------------------------------
-  # n8n — Moteur d'automatisation
-  # --------------------------------------------------------------------------
-  n8n:
-    image: docker.n8n.io/n8nio/n8n:latest
-    container_name: n8n
+  llm-proxy:
+    build: ./hermes-llm-proxy
+    container_name: llm-proxy
     restart: unless-stopped
     expose:
-      - "5678"
-    ports:
-      - "127.0.0.1:5678:5678"
+      - "8001"
+    env_file:
+      - .env
     environment:
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - N8N_HOST=0.0.0.0
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
-      - N8N_RUNNERS_MODE=internal
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=host.docker.internal
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-hermes}
-      - DB_POSTGRESDB_USER=${POSTGRES_USER:-younes}
-      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
-      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://169.58.30.70:5678}
-      - GENERIC_TIMEZONE=Europe/Paris
-    volumes:
-      - n8n_data:/home/node/.n8n
-      - ./n8n-data:/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - HERMES_ENV=${HERMES_ENV}
+      - DATABASE_URL=postgresql+asyncpg://agentai:${DB_PASSWORD}@postgres:5432/agentai
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
-      - orchestration-net
+      - agentai-net
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:5678/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 1g
-        reservations:
+          memory: 384m
+
+  celery-worker:
+    build: ./hermes-nebula-api
+    container_name: celery-worker
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker -l info -c 2 --without-heartbeat
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://agentai:${DB_PASSWORD}@postgres:5432/agentai
+      - REDIS_URL=redis://redis:6379/0
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - HERMES_ENV=${HERMES_ENV}
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - agentai-net
+    deploy:
+      resources:
+        limits:
           memory: 512m
 
-  # --------------------------------------------------------------------------
-  # MCP Server — Serveur Model Context Protocol (Node.js)
-  # --------------------------------------------------------------------------
-  mcp-server:
-    build:
-      context: ./mcp-server
-      dockerfile: Dockerfile
-    container_name: mcp-server
+  celery-beat:
+    build: ./hermes-nebula-api
+    container_name: celery-beat
     restart: unless-stopped
-    expose:
-      - "3100"
-    ports:
-      - "127.0.0.1:3100:3100"
+    command: celery -A app.workers.celery_app beat -l info --scheduler celery.beat:PersistentScheduler
     environment:
-      - MCP_PORT=3100
-      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - WORKSPACE_DIR=/workspace
-      - LOG_LEVEL=info
-    volumes:
-      - mcp_workspace:/workspace
+      - DATABASE_URL=postgresql+asyncpg://agentai:${DB_PASSWORD}@postgres:5432/agentai
+      - REDIS_URL=redis://redis:6379/0
+      - HERMES_ENV=${HERMES_ENV}
+    depends_on:
+      - redis
     networks:
-      - orchestration-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
+      - agentai-net
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          memory: 128m
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentai-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=agentai
+      - POSTGRES_USER=agentai
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - agentai-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+
+  redis:
+    image: redis:7-alpine
+    container_name: agentai-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - agentai-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
           memory: 512m
-        reservations:
-          memory: 256m
