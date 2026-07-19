@@ -163,7 +163,8 @@ async def system_status():
 # Inclure les routers API
 app.include_router(conversations_router)
 app.include_router(agents_router)
-app.include_router(settings_routerapp.include_router(tools_router)
+app.include_router(settings_router)
+app.include_router(tools_router)
 
 if __name__ == "__main__":
     import uvicorn
