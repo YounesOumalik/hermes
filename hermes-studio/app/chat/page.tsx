@@ -69,8 +69,9 @@ export default function ChatPage() {
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<number[]>([]);
 
-  const { streamState, startStream, stopStream } = useChatStream({
+  const { streamState, startStream, stopStream, resumeAfterApproval } = useChatStream({
     onDone: (content, model) => {
       if (pendingUserMessage) {
         const completed = [...messages, pendingUserMessage, { role: 'assistant' as const, content, time: 'maintenant' }];
@@ -86,6 +87,10 @@ export default function ChatPage() {
         setPendingUserMessage(null);
         void persistConversation(failed);
       }
+    },
+    onApprovalRequired: (approvalIds) => {
+      // Stocke les approval IDs pour les boutons inline dans ToolCallCard
+      setPendingApprovals(approvalIds);
     },
   });
 
@@ -245,13 +250,28 @@ export default function ChatPage() {
     setPendingUserMessage(userMessage);
     setStopping(false);
 
+    const activeAgentId = agents.find((a) => a.name === selectedAgentName)?.id;
     void startStream({
       messages: nextMessages.map(({ role, content: c, reasoning_details, attachments: atts }) => ({ role, content: c, ...(reasoning_details?.length ? { reasoning_details } : {}), ...(atts?.length ? { attachments: atts } : {}) })),
+      agent_id: activeAgentId,
       agent_name: selectedAgentName || undefined,
       model: selectedModel || undefined,
+      conversation_id: conversationId ? Number(conversationId) : undefined,
+      tools_schema: undefined, // MVP : schéma déduit côté serveur depuis tool_names
       tool_names: selectedTools,
       context_tokens: contextTokens,
     });
+  }
+
+  async function resolveApproval(approvalId: number, decision: 'approve' | 'reject') {
+    try {
+      await api.post(`api/approvals/${approvalId}/resolve`, { decision });
+      setPendingApprovals((current) => current.filter((id) => id !== approvalId));
+      // Le tool_result arrivera via le events bus (Phase 7) ou via re-stream si on relance un tour
+      // Pour MVP, on notifie et on attend que l'utilisateur relance
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : 'Approbation échouée.');
+    }
   }
 
   function stopGeneration() {
@@ -409,7 +429,18 @@ export default function ChatPage() {
                 <div className="message-content">
                   <div className="message-meta"><strong>{activeName}</strong><span>{stopping ? 'arrêt en cours…' : 'répond'}</span></div>
                   {streamState.reasoning.length > 0 && <ReasoningBlock details={streamState.reasoning} />}
-                  {streamState.tools.map((t, i) => <ToolCallCard key={i} tool={t.tool} status={t.status} args={t.args} result={t.result} />)}
+                  {streamState.tools.map((t, i) => (
+                    <ToolCallCard
+                      key={i}
+                      tool={t.tool}
+                      status={t.status}
+                      args={t.args}
+                      result={t.result}
+                      {...(t.approval_id !== undefined ? { approval_id: t.approval_id } : {})}
+                      onApprove={(aid) => void resolveApproval(aid, 'approve')}
+                      onReject={(aid) => void resolveApproval(aid, 'reject')}
+                    />
+                  ))}
                   {streamState.content ? (
                     <div className="message-text"><Markdown>{streamState.content}</Markdown></div>
                   ) : (
