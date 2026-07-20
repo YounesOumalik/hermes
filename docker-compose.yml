@@ -19,6 +19,11 @@ services:
       - OAUTH_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - OAUTH_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
+      # Forcer la redirect_uri pour qu'elle corresponde EXACTEMENT à celle déclarée
+      # dans Google Cloud Console → Credentials → OAuth 2.0 Client IDs.
+      # Sans cette var, Open WebUI reconstruit l'URL depuis le header Host (peut
+      # changer selon le proxy) → erreurs "redirect_uri_mismatch".
+      - OAUTH_REDIRECT_URI=https://agentai.smartefp.com/oauth/oidc/callback
       - WEBUI_SECRET_KEY=${JWT_SECRET}
       - WEBUI_AUTH=True
       - DEFAULT_USER_ROLE=pending
