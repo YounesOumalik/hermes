@@ -27,7 +27,12 @@ services:
       - WEBUI_SECRET_KEY=${JWT_SECRET}
       - WEBUI_AUTH=True
       - DEFAULT_USER_ROLE=pending
-      # Configuration pour se connecter au LLM Proxy interne (si compatible API OpenAI)
+      # NOTE: OPENAI_API_BASE_URL pointe vers hermes-llm-proxy, MAIS ce proxy
+      # utilise un format propriétaire (model_config_id: UUID) incompatible avec
+      # l'API OpenAI standard attendue par Open WebUI. On configure donc MiniMax
+      # directement via l'UI Admin (voir docs/OPENWEBUI_MINIMAX_SETUP.md).
+      # Variable conservée pour référence; peut être retirée quand le proxy sera
+      # réécrit en format OpenAI-compat.
       - OPENAI_API_BASE_URL=http://llm-proxy:8001/v1
     volumes:
       - open_webui_data:/app/backend/data
