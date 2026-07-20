@@ -30,7 +30,7 @@ services:
       # NOTE: OPENAI_API_BASE_URL pointe vers hermes-llm-proxy, MAIS ce proxy
       # utilise un format propriétaire (model_config_id: UUID) incompatible avec
       # l'API OpenAI standard attendue par Open WebUI. On configure donc MiniMax
-      # directement via l'UI Admin (voir docs/OPENWEBUI_MINIMAX_SETUP.md).
+      # directement via l'UI Admin (voir docs/OPENWEBUI_PROVIDERS.md).
       # Variable conservée pour référence; peut être retirée quand le proxy sera
       # réécrit en format OpenAI-compat.
       - OPENAI_API_BASE_URL=http://llm-proxy:8001/v1
@@ -39,15 +39,34 @@ services:
     networks:
       agentai-net:
         ipv4_address: 172.18.0.8
+    healthcheck:
+      # Open WebUI expose /health (retourne 200 OK) une fois l'app initialisée.
+      # start-period généreux : le 1er démarrage télécharge le modèle embedding
+      # sentence-transformers/all-MiniLM-L6-v2 (~80MB) depuis HuggingFace,
+      # ce qui prend 5-10 min sur un VPS modeste.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
     deploy:
       resources:
         limits:
-          memory: 1024m
+          # 2GiB au lieu de 1GiB — observé ~741MiB à vide, peut monter à 1.5GiB+
+          # avec plusieurs utilisateurs actifs et le modèle embedding en RAM.
+          memory: 2048m
 
+  # ---------------------------------------------------------------------------
+# llm-proxy : service LEGACY (format propriétaire, incompatible Open WebUI)
+# Conservé temporairement pour les outils CLI et debugging. Pas utilisé par
+# Open WebUI (qui parle directement à MiniMax/Zen via l'UI Admin).
+# Pour le désactiver : commenter ce bloc OU ajouter un profil `legacy`.
+# ---------------------------------------------------------------------------
   llm-proxy:
     build: ./hermes-llm-proxy
     container_name: llm-proxy
     restart: unless-stopped
+    profiles: ["legacy"]  # Démarrable via: docker compose --profile legacy up -d
     expose:
       - "8001"
     env_file:
