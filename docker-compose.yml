@@ -16,6 +16,10 @@ services:
       - "3000:8080"
     environment:
       - ENABLE_OAUTH_SIGNUP=True
+      # Fusionner les comptes par email quand le sub OAuth change (ex: migration
+      # OIDC → Google natif). Sans cette option, un user créé avec le provider OIDC
+      # ne pourra pas se reconnecter avec le provider Google → "email already registered".
+      - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=True
       # Provider Google NATIF (vs OIDC générique). Avec GOOGLE_CLIENT_ID/SECRET,
       # Open WebUI affiche le bouton "Continuer avec Google" + le logo Google officiel
       # (au lieu du bouton "Continuer avec SSO" générique). Cf. docs/OPENWEBUI_PROVIDERS.md.
