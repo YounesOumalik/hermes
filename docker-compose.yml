@@ -16,14 +16,16 @@ services:
       - "3000:8080"
     environment:
       - ENABLE_OAUTH_SIGNUP=True
-      - OAUTH_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - OAUTH_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - OPENID_PROVIDER_URL=https://accounts.google.com/.well-known/openid-configuration
+      # Provider Google NATIF (vs OIDC générique). Avec GOOGLE_CLIENT_ID/SECRET,
+      # Open WebUI affiche le bouton "Continuer avec Google" + le logo Google officiel
+      # (au lieu du bouton "Continuer avec SSO" générique). Cf. docs/OPENWEBUI_PROVIDERS.md.
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_OAUTH_SCOPE=openid email profile
       # Forcer la redirect_uri pour qu'elle corresponde EXACTEMENT à celle déclarée
       # dans Google Cloud Console → Credentials → OAuth 2.0 Client IDs.
-      # Sans cette var, Open WebUI reconstruit l'URL depuis le header Host (peut
-      # changer selon le proxy) → erreurs "redirect_uri_mismatch".
-      - OAUTH_REDIRECT_URI=https://agentai.smartefp.com/oauth/oidc/callback
+      # Avec le provider Google natif, l'endpoint de callback est /oauth/google/callback.
+      - GOOGLE_REDIRECT_URI=https://agentai.smartefp.com/oauth/google/callback
       - WEBUI_SECRET_KEY=${JWT_SECRET}
       - WEBUI_AUTH=True
       - DEFAULT_USER_ROLE=pending
