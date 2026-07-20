@@ -16,6 +16,9 @@ services:
       - "3000:8080"
     environment:
       - ENABLE_OAUTH_SIGNUP=True
+      # Ne PAS stocker la config OAuth en DB (elle écraserait les env vars
+      # au redémarrage). Les env vars GOOGLE_* et OAUTH_* ont toujours priorité.
+      - ENABLE_OAUTH_PERSISTENT_CONFIG=False
       # Fusionner les comptes par email quand le sub OAuth change (ex: migration
       # OIDC → Google natif). Sans cette option, un user créé avec le provider OIDC
       # ne pourra pas se reconnecter avec le provider Google → "email already registered".
