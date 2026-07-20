@@ -36,6 +36,25 @@ services:
       - WEBUI_SECRET_KEY=${JWT_SECRET}
       - WEBUI_AUTH=True
       - DEFAULT_USER_ROLE=pending
+
+      # ---------------------------------------------------------------------
+      # Limites globales d'usage (RAG / Workspace). Quotas per-user via
+      # User Groups dans l'UI Admin (Admin → Users → Groups).
+      # ---------------------------------------------------------------------
+      # Taille max d'un fichier uploadé (en MB). Default = illimité.
+      - RAG_FILE_MAX_SIZE=100
+      # Nombre max de fichiers par upload (RAG). Default = illimité.
+      - RAG_FILE_MAX_COUNT=20
+      # Nombre max de fichiers dans un dossier. Default = illimité.
+      - FOLDER_MAX_FILE_COUNT=500
+      # Bloquer l'upload de pages web (URL) pour les non-admin.
+      - USER_PERMISSIONS_CHAT_WEB_UPLOAD=False
+      # Restreindre les espaces Workspace (modèles, knowledge, prompts, tools)
+      # aux non-admins. Les admins gardent l'accès total.
+      - USER_PERMISSIONS_WORKSPACE_MODELS_ACCESS=False
+      - USER_PERMISSIONS_WORKSPACE_KNOWLEDGE_ACCESS=False
+      - USER_PERMISSIONS_WORKSPACE_PROMPTS_ACCESS=False
+      - USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False
       # NOTE: OPENAI_API_BASE_URL pointe vers hermes-llm-proxy, MAIS ce proxy
       # utilise un format propriétaire (model_config_id: UUID) incompatible avec
       # l'API OpenAI standard attendue par Open WebUI. On configure donc MiniMax
